@@ -72,6 +72,7 @@ __device__ void __device_distance(float *, float *, float *, int);
 __device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize);
 __device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize);
 __device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, float T, int iSize, int kSize);
+__device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
 
 float my_random(float min, float max){
 	return min + (float)(rand() * (max - min) / RAND_MAX);
@@ -97,7 +98,7 @@ void init_datasets(DataSet ds[]){
 	for (int j = 0; j < N; j++){
 		ds[j].t_pos = 0;
 		ds[j].q = 2.0;		//	とりあえずqは2.0固定
-		ds[j].T[0] = pow(20.0f, (j + 1.0f - 64.0f) / 64.0f);  // Thighで初期温度を決定
+		ds[j].T[0] = pow(20.0f, (j + 1.0f - N/2.0f) / (N/2.0f));  // Thighで初期温度を決定
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
 			//	ランダム初期化
@@ -141,7 +142,7 @@ void iris_datasets(DataSet ds[]){
 	for (int j = 0; j < N; j++){
 		ds[j].t_pos = 0;
 		ds[j].q = 2.0;		//	とりあえずqは2.0固定
-		ds[j].T[0] = pow(20.0f, (j + 1.0f - 64.0f) / 64.0f);  // Thighで初期温度を決定
+		ds[j].T[0] = pow(20.0f, (j + 1.0f - N / 2.0f) / (N / 2.0f));  // Thighで初期温度を決定
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
 			for (int p = 0; p < P; p++){
@@ -163,11 +164,9 @@ void print_result(const DataSet *ds){
 	printf("\n");
 	printf("q=%f", ds->q);
 	printf("\n");
-	printf("vi=");
-	for (int i = 0; i < CLUSTER_NUM; i++){
-		for (int p = 0; p < P; p++){
-			printf("%1.2f ", ds->vi[i*P + p]);
-		}
+	printf("results=");
+	for (int i = 0; i < DATA_NUM; i++){
+			printf("%d ", ds->results[i]);
 	}
 	printf("\n");
 	printf("jfcm = %f\n", ds->jfcm);
@@ -210,10 +209,7 @@ int main(){
 	/*
 	ここからBFSで展開する
 	*/
-
-
-
-	for (int i = 0; i < CLUSTER_NUM; i++){
+	for (int i = 0; i < 1; i++){
 
 		/*
 		HOSTメモリからGPUメモリへコピー
@@ -234,20 +230,25 @@ int main(){
 	}
 
 	/*
-	uikをファイルに書き込む
+		uikをファイルに書き込む
 	*/
-	FILE *fp2 = fopen("data/uik.txt", "w");
-	for (int k = 0; k <DATA_NUM; k++){
-		for (int i = 0; i < CLUSTER_NUM; i++){
-			fprintf(fp2, "%f ", h_ds[0].uik[i*DATA_NUM + k]);
+	for (int n = 0; n < N; n++){
+		char buf[256];
+		sprintf(buf, "out/uik%d.txt", n);
+		FILE *fp2 = fopen(buf, "w");
+		for (int k = 0; k < DATA_NUM; k++){
+			for (int i = 0; i < CLUSTER_NUM; i++){
+				fprintf(fp2, "%f ", h_ds[n].uik[i*DATA_NUM + k]);
+			}
+			fprintf(fp2, "\n");
 		}
-		fprintf(fp2, "\n");
+		fclose(fp2);
 	}
-	fclose(fp2);
 
 	/*
 	Datasetをファイルに書き込む
 	*/
+	/*
 	FILE *fp3 = fopen("data/ds.txt", "w");
 	fprintf(fp3, "Number,q,T,vi.x,vi.y,objFunc\n");
 	for (int i = 0; i < N; i++){
@@ -258,16 +259,26 @@ int main(){
 		}
 	}
 	fclose(fp3);
-
+	*/
 
 	/*
-	結果を表示する
+		結果を表示する
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
 	for (int i = 0; i < N; i++){
 		printf("[%d] ", i);
 		print_result(&h_ds[i]);
 	}
+
+	/*
+		最も良い解を表示する
+	*/
+	printf("--------------------The Clustering Result----------------------\n");
+	for (int i = 0; i < N; i++){
+		printf("[%d] ", i);
+		print_result(&h_ds[i]);
+	}
+
 }
 
 
@@ -353,6 +364,25 @@ __device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, in
 	}
 }
 
+
+/*
+eval
+*/
+__device__ void __device_eval(float *uik, int *results, int iSize, int kSize){
+	for (int k = 0; k < kSize; k++){
+		results[k] = 0;
+		float maxValue = uik[0*kSize + k];
+		for (int i = 1; i < iSize; i++){
+			if (maxValue < uik[i*kSize + k]){
+				maxValue = uik[i*kSize + k];
+				results[k] = i;
+			}
+		}
+	}
+
+}
+
+
 /*
 目的関数JFCMを定義しておく
 最適解の判断に利用する
@@ -422,7 +452,7 @@ __device__ void __device_copy_float(float *src, float *dst, int size){
 }
 
 /*
-FCM
+	FCM
 */
 __global__ void device_FCM(DataSet *ds){
 	int i = threadIdx.x;
@@ -467,6 +497,7 @@ __global__ void device_FCM(DataSet *ds){
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
+		__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 		return;
 	}
 
@@ -475,7 +506,7 @@ __global__ void device_FCM(DataSet *ds){
 	__device_copy_float(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM*P);
 
 	// 収束していなければ温度を下げて繰り返す
-	ds[i].t_pos++;
+	ds[i].t_pos++; 
 	ds[i].t_change_num++;
 	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P);
 	ds[i].T[ds[i].t_pos] = t;
@@ -483,8 +514,6 @@ __global__ void device_FCM(DataSet *ds){
 
 
 }
-
-
 
 
 
