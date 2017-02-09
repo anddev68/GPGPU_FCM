@@ -97,7 +97,7 @@ void init_datasets(DataSet ds[]){
 	for (int j = 0; j < N; j++){
 		ds[j].t_pos = 0;
 		ds[j].q = 2.0;		//	とりあえずqは2.0固定
-		ds[j].T[0] = pow(20.0f, j + 1.0f - 64.0f / 64.0f);  // Thighで初期温度を決定
+		ds[j].T[0] = pow(20.0f, (j + 1.0f - 64.0f) / 64.0f);  // Thighで初期温度を決定
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
 			//	ランダム初期化
@@ -130,7 +130,7 @@ void init_datasets(DataSet ds[]){
 
 void print_result(const DataSet *ds){
 	printf("T=");
-	for (int i = 0; i < 5; i++) printf("%1.2f ", ds->T[i]);
+	for (int i = 0; i < TEMP_SCENARIO_NUM; i++) printf("%1.2f ", ds->T[i]);
 	printf("\n");
 	printf("q=%f", ds->q);
 	printf("\n");
@@ -423,7 +423,7 @@ __global__ void device_FCM(DataSet *ds){
 	//	同一温度での収束を判定
 	//	収束していなければそのままの温度で繰り返す
 	__device_calc_convergence(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM, P, &err);
-	//err= 0; // 温度を下げる
+	err= 0; // 温度を下げる
 	if (EPSIRON < err){
 		//	温度を下げずに関数を終了
 		ds[i].t_pos++;
@@ -434,7 +434,7 @@ __global__ void device_FCM(DataSet *ds){
 	//	前の温度との収束を判定
 	//	収束していたら終了
 	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
-	//err = 0; // 終了
+	err = 0; // 終了
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
