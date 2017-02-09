@@ -1,504 +1,549 @@
 /*
-	温度ごとにスレッドを立てて並列処理を行う
+並列グラフ探索を利用したバージョン
+中央集権型 - プロセッサ間でノードのopen listを共有メモリ上に共有する
+http://d.hatena.ne.jp/hanecci/20110205/1296924411
 */
 
-
-// CUDA runtime
 #include <cuda_runtime.h>
-
-// includes
 #include <helper_functions.h>  // helper for shared functions common to CUDA Samples
 #include <helper_cuda.h>       // helper functions for CUDA error checking and initialization
-
 #include <cuda.h>
-
 #include <memory>
 #include <iostream>
 #include <cassert>
 #include <algorithm>
-
 #include <stdio.h>
-
 #include <time.h>
-
 #include <vector>
-
+#include <string>
+#include <sstream>
+#include <list>
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
 #include "Timer.h"
 #include "CpuGpuData.cuh"
+#include <time.h>
 
+/*
+############################ Warning #####################
+GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
+適宜値を変えること
+########################################################
+*/
+#define CLUSTER_NUM 2 /*クラスタ数*/
+#define DATA_NUM 40 /*データ数*/
+#define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
+#define P 2 /* 次元数 */
+#define EPSIRON 0.001 /* 許容エラー*/
+#define N 128 /* データセット数 */
 
-#define DATA_TYPE float
-#define OK 1
-#define NG 0
+typedef unsigned  int uint;
 
-#define N 32	//	一度に実行するスレッド/温度の数
-
-using namespace std;
-
-
-
-/**
-	クラスタリング結果をGPUから受け取るための構造体
+/*
+デバイスに渡すため/受け取るのデータセット
+device_vectorに突っ込む構造体の中はどうやら通常の配列で良いらしい。
+その為、可変長配列は使用できない可能性が高い。
+FCMではdik, uik...
 */
 typedef struct{
-	int iterations;
-	float q;
-	float T;
-}Result;
+	float dik[DATA_NUM*CLUSTER_NUM];
+	float uik[DATA_NUM*CLUSTER_NUM];
+	float xk[DATA_NUM*P];
+	float vi[CLUSTER_NUM*P];
+	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
+	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
+	int results[DATA_NUM];	//	実行結果
+	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
+	float q;		//	q値
+	int t_pos;		//	温度シナリオ参照位置
+	int t_change_num;	//	温度変更回数
+	float jfcm;
+	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
+}DataSet;
 
 
-/**
-	srcをdstにコピーする
-*/
-__device__ void gpu_array_copy(DATA_TYPE *src, DATA_TYPE *dst, int len){
-	for (int i = 0; i < len; i++){
-		dst[i] = src[i];
-	}
+__global__ void device_FCM(DataSet *ds);
+__device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err);
+__device__ void __device_VFA(float *, float, int, float, float);
+__device__ void __device_update_vi(float *uik, float *xk, float *vi, float iSize, int kSize, int pSize, float m);
+__device__ void __device_update_uik(float *, float *, int, int, float);
+__device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T);
+__device__ void __device_distance(float *, float *, float *, int);
+__device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize);
+__device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize);
+__device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, float T, int iSize, int kSize);
 
+float my_random(float min, float max){
+	return min + (float)(rand() * (max - min) / RAND_MAX);
 }
 
-
-/**
-q-FCMでuik-matrixを作成する
-CPUと同様に単スレッドで作成する
-@param q q値
-@param T 温度
-@param dik dik-matrix
-*/
-__device__ void gpu_update_uik(double q, double T, DATA_TYPE *uik, DATA_TYPE* dik, int iLen, int kLen){
-
-	double powered = 1.0 / (1.0 - q);
-	DATA_TYPE beta = 1.0 / T;
-
-	for (int i = 0; i < iLen; i++){
-		for (int k = 0; k < kLen; k++){
-
-			DATA_TYPE up = pow(double(1.0 - beta * (1.0 - q) * dik[i*kLen + k]), powered);
-
-			DATA_TYPE sum = 0;
-			for (int j = 0; j < iLen; j++){
-				sum += pow(double(1.0 - beta * (1.0 - q) * dik[j*kLen + k]), double(powered));
-			}
-			uik[i*kLen + k] = up / sum;
-		}
-	}
-}
-
-
-/**
-q-FCMでviを作成する
-cpuと同様に単スレッドで作成する
-*/
-__device__ void gpu_update_vi(float q, DATA_TYPE *uik, DATA_TYPE *xk, DATA_TYPE *vi, int iLen, int kLen, int pLen){
-	for (int i = 0; i < iLen; i++){
-		//	独立しているため、分母に利用する合計値を出しておく
-		DATA_TYPE sum_down = 0;
-		for (int k = 0; k < kLen; k++){
-			sum_down += pow(uik[i*kLen + k], q);
-		}
-		//	分子を計算する	
-		for (int p = 0; p < pLen; p++){
-			DATA_TYPE sum_up = 0;
-			for (int k = 0; k < kLen; k++){
-				sum_up += pow(uik[i*kLen + k], q) * xk[p*kLen + k];
-			}
-			vi[p*iLen + i] = sum_up / sum_down;
-		}
-	}
-}
-
-
-/**
-	dikを作成する
-*/
-__device__ void gpu_make_dik(DATA_TYPE *dik, DATA_TYPE *vi, DATA_TYPE *xk, int iLen, int kLen, int pLen){
-	for (int i = 0; i < iLen; i++){
-		for (int k = 0; k < kLen; k++){
-			DATA_TYPE sum = 0.0;
-			for (int p = 0; p < pLen; p++){
-				sum += //(xk[p*kLen + k] - vi[p*iLen + i]);
-					pow(DATA_TYPE(xk[p*kLen + k] - vi[p*iLen + i]), (DATA_TYPE)2.0);
-			}
-			//	dik->setValue(k, i, sqrt(sum));
-			dik[i*kLen + k] = sum;
-		}
-	}
-}
-
-
-/**
-	収束判定
-	@return 0 収束 それ以外 収束していない
-*/
-__device__ void gpu_judgement_convergence(DATA_TYPE *vi, DATA_TYPE *vi_bak, int iLen, int pLen, int *result, DATA_TYPE epsiron = 0.001){
-	DATA_TYPE max_error = 0;
-	for (int i = 0; i < iLen; i++){
-		DATA_TYPE sum = 0.0;				//	クラスタ中心の移動量を計算する
-		for (int p = 0; p < pLen; p++){
-			sum += pow(double(vi[p*iLen + i] - vi_bak[p*iLen + i]), 2.0);
-		}
-		max_error = MAX(max_error, sum);	//	最も大きい移動量を判断基準にする
-	}
-
-	if (max_error < epsiron) *result = OK;	//	クラスタ中心の移動がなくなったら終了
-	//else *result = 0;
-}
-
-
-
-/*
-	クラスタリングを行う
-*/
-__global__ void gpu_clustering(DATA_TYPE *g_dik, DATA_TYPE *g_uik, DATA_TYPE *g_vi, DATA_TYPE *g_vi_bak, DATA_TYPE *g_xk, Result *g_results, float *g_T, int iLen, int kLen, int pLen){
-
-	//	スレッド番号を取得
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-
-	//	q値設定
-	const float q = 2.0;
-
-	//	xkはどれでも一緒なので変換処理は必要なし
-	//	同時アクセスできない場合は考える
-	DATA_TYPE *xk = &g_xk[0];
-
-	//	配列を3次元で確保しているので
-	//	アドレスの変換処理を行う
-	DATA_TYPE *dik = &g_dik[iLen*kLen*index];
-	DATA_TYPE *uik = &g_uik[iLen*kLen*index];
-	DATA_TYPE *vi = &g_vi[iLen*pLen*index];
-	DATA_TYPE *vi_bak = &g_vi_bak[iLen*pLen*index];
-	Result *result_t = &g_results[index];
-
-
-	//	温度も1次元で確保しているので
-	//	スレッド番号から変換処理を行う
-	float T = g_T[index];
-
-	//	初期uikを作成する
-	gpu_make_dik(dik, vi, xk, iLen, kLen, pLen);
-	gpu_update_uik(q, T, uik, dik, iLen, kLen);
-
-
-	//	収束するまで繰り返し行う
-	//int *repeat_num = &tmp2[0];
-	int iterations;
-	for (iterations = 1; iterations < 8; iterations++){
-
-		//	viのバックアップを取る
-		gpu_array_copy(vi, vi_bak, iLen*pLen);
-
-		//	viを更新する
-		gpu_update_vi(q, uik, xk, vi, iLen, kLen, pLen);
-
-		//	dikを作成する
-		gpu_make_dik(dik, vi, xk, iLen, kLen, pLen);
-
-		//	uikを作成する
-		gpu_update_uik(q, T, uik, dik, iLen, kLen);
-
-		//	収束判定
-		int result = NG;
-		gpu_judgement_convergence(vi, vi_bak, iLen, pLen, &result);
-		if (result == OK) break;
-	}
-	
-	result_t->iterations = iterations;
-	result_t->q = q;
-	result_t->T = T;
-
-}
-
-
-
-
-/*
-	配列操作関数
-*/
-void init_random(){
-	srand(time(NULL));
-	for (int i = 0; i < 100; i++){
-		rand();
-	}
-}
-void fill_random(DATA_TYPE *data, int len, float min, float max){
-	//	min-maxでランダムに値を埋める
-	for (int i = 0; i < len; i++){
-		data[i] = (rand() % 100) * (max - min) / 100.0;
-	}
-}
-void print_float_array(float *data, int width, int divider = 10){
-	for (int i = 0; i < width; i++){
-		printf("%3.4f ", data[i]);
-		if ((i + 1) % divider == 0) printf("\n");
-	}
-	if ( width % divider !=0 )
-		printf("\n");
-}
-void print_int_array(int *data, int width, int divider = 10){
-	for (int i = 0; i < width; i++){
-		printf("%d ", data[i]);
-		if ((i + 1) % divider == 0) printf("\n");
-	}
-	if (width % divider != 0)
-		printf("\n");
-}
-void deepcopy_vector(vector<int> *src, vector<int> *dst){
-	for (int i = 0; i < src->size(); i++){
-		(*dst)[i] = (*src)[i];
-	}
-}
-int get_max(float *data, int size){
-	int max = data[0];
-	for (int i = 1; i < size; i++) max = MAX(data[i], max);
-	return max;
-}
-int get_min(float *data, int size){
-	int min = data[0];
-	for (int i = 1; i < size; i++) min = MIN(data[i], min);
-	return min;
-}
-void copy_array(DATA_TYPE *src, DATA_TYPE *dst, int len){
-	for (int i = 0; i < len; i++){
-		dst[i] = src[i];
-	}
-}
-
-/*
-	irisのデータを読み込む
-*/
-const int IRIS_P = 4;	//	4次元
-const int IRIS_K = 150;	//	150個のデータ
-const int IRIS_I = 3;	//	3個のクラスタ
-const char IRIS_FILE_NAME[16] = "data/iris.txt";
-const char IRIS_CLUSTER_NAME[3][32] = {
-	"Iris-setosa",
-	"Iris-versicolor",
-	"Iris-virginica"
-};
-void load_iris(float *xk, int *target){
-	int kLen = IRIS_K;
-	int pLen = IRIS_P;
-
-	FILE *fp = fopen(IRIS_FILE_NAME, "r");
-	for (int k = 0; k < kLen; k++){
-		for (int p = 0; p < pLen; p++){
-			float tmp;
-			fscanf(fp, "%f", &tmp);
-			xk[p*kLen + k] = tmp;
-		}
-		char buf[32];
-		int index = 0;
-		fscanf(fp, "%s", &buf);	//	名前
-		for (int i = 1; i < 3; i++){
-			if (strcmp(buf, IRIS_CLUSTER_NAME[i]) == 0){
-				index = i;
-			}
-		}
-		target[k] = index;
-	}
-	fclose(fp);
-}
-
-
-/*
-	正分類データ＝ターゲットとクラスタリング結果＝サンプルを比較し
-	誤った数を計算する
-	クラスタ番号は順不同とする
-*/
-int compare(int *target, int *sample, int size){
-	//	[0,1,2]の組み合わせの作成用配列と正解パターン
-	vector<int> pattern = vector<int>();	
-	vector<int> good_pattern = vector<int>();
-	for (int i = 0; i < 3; i++){
-		pattern.push_back(i);
-		good_pattern.push_back(0);
-	}
-
-	//	エラー最小値
-	int min_error = INT_MAX;
-
-	//	すべての置換パターンでマッチング
-	do{
-		//	エラー数
-		int error = 0;
-
-		//	すべてのデータについて、
-		for (int i = 0; i < size; i++){
-			int index = pattern[sample[i]];	//	置換する
-			if (target[i] != index) error++;	//	誤った分類
-		}
-		//	誤分類数が少なければ入れ替える
-		if (error < min_error){
-			min_error = error;
-			deepcopy_vector(&pattern, &good_pattern);
-		}
-	} while (next_permutation(pattern.begin(), pattern.end()));
-
-	//	置換パターンを利用して、インデックスを置換する
+void listT_to_str(std::stringstream ss, float *T, int size){
 	for (int i = 0; i < size; i++){
-		sample[i] = good_pattern[sample[i]];
+		ss << T[i];
 	}
-
-	return min_error;
 }
 
-
-/**
-	uikから帰属しているクラスターの番号を取得する
-*/
-void belongs(DATA_TYPE *uik, int *sample, int kLen, int iLen){
-	for (int k = 0; k < kLen; k++){
-		DATA_TYPE maxValue = 0;
-		int maxIndex = 0;
-		for (int i = 0; i < iLen; i++){
-			DATA_TYPE value = uik[i*kLen+k];
-			if (maxValue < value){
-				maxIndex = i;
-				maxValue = value;
-			}
-		}
-		//	もっとも高い帰属度を持つクラスタに変更する
-		sample[k] = maxIndex;
+void init_datasets(DataSet ds[]){
+	float tmp_xk[DATA_NUM*P];
+	for (int k = 0; k < DATA_NUM / 2; k++){
+		tmp_xk[k * P + 0] = my_random(0.0, 0.5);
+		tmp_xk[k * P + 1] = my_random(0.0, 0.5);
+	}
+	for (int k = DATA_NUM / 2; k < DATA_NUM; k++){
+		tmp_xk[k * P + 0] = my_random(0.5, 1.0);
+		tmp_xk[k * P + 1] = my_random(0.5, 1.0);
 	}
 
-}
-
-
-/**
-	温度を設定する
-*/
-float VFA(float Thigh, int k, float D, float Cd=2.0){
-	return Thigh * exp(-Cd * pow(k-1, 1.0/D));
-}
-
-
-
-//	====================================================================================================================
-//	メイン関数
-//
-//	定数値
-//		iLen	クラスタ数
-//		kLen	データ数
-//		pLen	クラスタとデータの次元
-//		N		同時に実行するスレッドの数
-//
-//
-//	CPUとGPUで共有する配列
-//	配列は(スレッド数xデータ数x次元)で3次元的に確保し、GPU側でアクセスするアドレスを設定する。
-//	xkは変化することはないので、そのまま作成する
-//		dik		|| vi-xk ||^2		
-//		uik		帰属度関数
-//		vi		クラスタ中心
-//		vi_bak	収束判定用に利用する一時的な配列
-//		xk		データセット
-//
-//
-//
-//	====================================================================================================================
-int main(void){
-
-	const int iLen = 3;
-	const int kLen = 150;
-	const int pLen = 4;
-	CpuGpuData<DATA_TYPE> dik(iLen*kLen*N);
-	CpuGpuData<DATA_TYPE> uik(iLen*kLen*N);
-	CpuGpuData<DATA_TYPE> vi(iLen*pLen*N);
-	CpuGpuData<DATA_TYPE> vi_bak(iLen*pLen*N);
-	CpuGpuData<DATA_TYPE> vi2_bak(iLen*pLen*N);
-	CpuGpuData<DATA_TYPE> xk(kLen*pLen);
-
-	//	結果保存用
-	int target[kLen] = { 0 };
-	int sample[kLen] = { 0 };
-	CpuGpuData<Result> results(N);	//	結果保存用
-
-	//	温度配列はCPUで確保する
-	CpuGpuData<float> T_array(N);	//	温度配列
-	float Thigh_array[N] = { 0 };				//	初期温度
-
-	//	xkはアイリスで設定
-	load_iris(xk.m_data, target);
-
-	//	viはランダム値で設定
-	init_random();
-	fill_random(vi.m_data, vi.m_size, get_min(xk.m_data, xk.m_size), get_max(xk.m_data, xk.m_size));
-
-	//	初期温度Thighを設定する
-	//	各スレッドごとに温度を設定する
-	for (int i = 0; i < N; i++){
-		T_array.m_data[i] = 2.0 + 0.01 * i + 0.01;
-		Thigh_array[i] = 2.0 + 0.01 * i + 0.01;
-	}
-
-
-	//	収束するまで繰り返す
-	for (int i = 0; i < 10; i++){
-
-		//	gpuで(その温度で）クラスタリングを行う
-		gpu_clustering << <1, N >> >(dik.m_data, uik.m_data, vi.m_data, vi_bak.m_data, xk.m_data, results.m_data, T_array.m_data, iLen, kLen, pLen);
-		cudaDeviceSynchronize();
-
-		cudaError_t cudaErr = cudaGetLastError();
-		if (cudaErr != cudaSuccess){
-			printf("%s\n", cudaGetErrorString(cudaErr));
+	for (int j = 0; j < N; j++){
+		ds[j].t_pos = 0;
+		ds[j].q = 2.0;		//	とりあえずqは2.0固定
+		ds[j].T[0] = pow(20.0f, j + 1.0f - 64.0f / 64.0f);  // Thighで初期温度を決定
+		ds[j].is_finished = FALSE;
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			//	ランダム初期化
+			ds[j].vi[i * P + 0] = (double)rand() / RAND_MAX;
+			ds[j].vi[i * P + 1] = (double)rand() / RAND_MAX;
 		}
-
-		//	結果の出力
-		printf("---------------result--------------\n");
-		printf("index\tq\tT\titerations\terror\n");
-		for (int j = 0; j < N; j++){
-			belongs(&uik.m_data[j*kLen*iLen], sample, kLen, iLen);
-			int error = compare(target, sample, kLen);
-			printf("%d\t%3.2f\t%3.4f\t%d\t%d\n", j, results.m_data[j].q, results.m_data[j].T, results.m_data[j].iterations, error);
+		for (int k = 0; k < DATA_NUM; k++){
+			ds[j].xk[k * P + 0] = tmp_xk[k * P + 0];
+			ds[j].xk[k * P + 1] = tmp_xk[k * P + 1];
 		}
-
-		//	温度を下げる
-		for (int j = 0; j < N; j++){
-			T_array.m_data[j] = VFA(Thigh_array[j], i + 2, pLen);
-		}
-
 
 	}
-
-
-
-	//print_float_array(T_array.m_data, T_array.m_size);
-
-
-
-
-
-
-
-
 
 
 	/*
-	for (int i = 0; i < N; i++){
-		printf("<Threads No.%d>\n", i);
-		belongs(uik.m_data, sample, kLen, iLen);
-		int error = compare(target, sample, kLen);
-		printf("error=%d\n", error);
-		printf("iterations=%d\n", results.m_data[i].iterations);
-		printf("q=%f\n", results.m_data[i].q);
-		printf("T=%f\n", results.m_data[i].T);
-		printf("sample=\n");
-		print_int_array(sample, kLen, 25);
-		printf("\ntarget=\n");
-		print_int_array(target, kLen, 25);
-		printf("\n");
-
+	for (int k = 0; k < DATA_NUM / 2; k++){
+	ds->xk[k * P + 0] = my_random(0.0, 0.5);
+	ds->xk[k * P + 1] = my_random(0.0, 0.5);
+	//h_ds[0].xk[k * P + 0] = my_random(0.0, 5.0);
+	//h_ds[0].xk[k * P + 1] = my_random(0.0, 0.5);
 	}
+	for (int k = DATA_NUM / 2; k < DATA_NUM; k++){
+	//[0].xk[k * P + 0] = my_random(0.75, 1.0);
+	//h_ds[0].xk[k * P + 1] = my_random(0.75, 1.0);
+	ds->xk[k * P + 0] = my_random(0.5, 1.0);
+	ds->xk[k * P + 1] = my_random(0.5, 1.0);
+	}
+	*/
+}
+
+void print_result(const DataSet *ds){
+	printf("T=");
+	for (int i = 0; i < 5; i++) printf("%1.2f ", ds->T[i]);
+	printf("\n");
+	printf("q=%f", ds->q);
+	printf("\n");
+	printf("vi=");
+	for (int i = 0; i < CLUSTER_NUM; i++){
+		for (int p = 0; p < P; p++){
+			printf("%1.2f ", ds->vi[i*P + p]);
+		}
+	}
+	printf("\n");
+	printf("jfcm = %f\n", ds->jfcm);
+
+	/*
+	printf("vi_bak=");
+	for (int i = 0; i < CLUSTER_NUM; i++){
+	for (int p = 0; p < P; p++){
+	printf("%1.2f ", ds->vi_bak[i*P + p]);
+	}
+	}
+	printf("\n");
+	*/
+}
+
+
+
+int main(){
+	srand((unsigned)time(NULL));
+
+	/*
+	ホストとデバイスのデータ領域を確保する
+	DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
+	確保数1にすると並列化を行わず、通常VFA+FCMで行う
+	*/
+	thrust::device_vector<DataSet> d_ds(N);
+	thrust::host_vector<DataSet> h_ds(N);
+
+	/*
+	初期状態を作成する
+	TODO:ランダムパターン, 既存のデータセットパターンを用意する必要あり
+	*/
+	//const float listT[N] = { 50.0, 20.0, 10.0, 5.0, 2.0, 1.0};
+	init_datasets(&h_ds[0]);
+
+	printf("vi=\n");
+	for (int j = 0; j < CLUSTER_NUM; j++) printf("%1.2f %1.2f\n", h_ds[0].vi[j*P + 0], h_ds[0].vi[j*P + 1]);
+	printf("-----------------------\n");
+
+	/*
+	ここからBFSで展開する
 	*/
 
 
 
-	
+	for (int i = 0; i < CLUSTER_NUM; i++){
 
-	//print_float_array(dik.m_data, dik.m_size);
-	//print_float_array(vi_bak.m_data, vi_bak.m_size);
+		/*
+		HOSTメモリからGPUメモリへコピー
+		*/
+		d_ds = h_ds;
+
+		/*
+		DataSetInに対しFCM法を適用することにより、DataSetOutを取得する
+		*/
+		device_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
+
+		/*
+		GPUメモリからHOSTメモリへコピー
+		イコールで代入できるらしい
+		*/
+		h_ds = d_ds;
+
+	}
+
+	/*
+	uikをファイルに書き込む
+	*/
+	FILE *fp2 = fopen("data/uik.txt", "w");
+	for (int k = 0; k <DATA_NUM; k++){
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			fprintf(fp2, "%f ", h_ds[0].uik[i*DATA_NUM + k]);
+		}
+		fprintf(fp2, "\n");
+	}
+	fclose(fp2);
+
+	/*
+	Datasetをファイルに書き込む
+	*/
+	FILE *fp3 = fopen("data/ds.txt", "w");
+	fprintf(fp3, "Number,q,T,vi.x,vi.y,objFunc\n");
+	for (int i = 0; i < N; i++){
+		for (int j = 0; j < CLUSTER_NUM; j++){
+			std::stringstream ss;
+			for (int k = 0; k < TEMP_SCENARIO_NUM; k++) ss << h_ds[i].T[k] << "->";
+			fprintf(fp3, "%d,%f,%s,%f,%f,%f\n", i, h_ds[i].q, ss.str().c_str(), h_ds[i].vi[j*P + 0], h_ds[i].vi[j*P + 1], h_ds[i].jfcm);
+		}
+	}
+	fclose(fp3);
 
 
-
-	cudaDeviceReset();
+	/*
+	結果を表示する
+	*/
+	printf("--------------------The Clustering Result----------------------\n");
+	for (int i = 0; i < N; i++){
+		printf("[%d] ", i);
+		print_result(&h_ds[i]);
+	}
 }
+
+
+
+
+
+
+/*
+FCM収束判定関数
+GPUでViの収束判定を行う
+*/
+__device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err){
+	float max_error = 0;
+	for (int i = 0; i < iSize; i++){
+		float sum = 0.0;				//	クラスタ中心の移動量を計算する
+		for (int p = 0; p < pSize; p++){
+			sum += pow(vi[i*pSize + p] - vi_bak[i*pSize + p], 2.0f);
+		}
+		max_error = MAX(max_error, sum);	//	最も大きい移動量を判断基準にする
+	}
+	*err = max_error;
+}
+
+/*
+FCM冷却関数
+VFAで温度を下げる
+*/
+__device__ void __device_VFA(float *T, float Thigh, int k, float D, float Cd = 2.0){
+	*T = Thigh * exp(-Cd*pow((float)k - 1, 1.0f / D));
+}
+
+/*
+FCM
+クラスタ中心を更新
+*/
+__device__  void __device_update_vi(float *uik, float *xk, float *vi, int iSize, int kSize, int pSize, float m){
+	for (int i = 0; i < iSize; i++){
+		//	独立しているため、分母に利用する合計値を出しておく
+		float sum_down = 0;
+		for (int k = 0; k < kSize; k++){
+			sum_down += pow(uik[i*kSize + k], m);
+		}
+		//	分子を計算する	
+		for (int p = 0; p < pSize; p++){
+			float sum_up = 0;
+			for (int k = 0; k < kSize; k++){
+				sum_up += pow(uik[i*kSize + k], m) * xk[k*pSize + p];
+			}
+			vi[i*pSize + p] = sum_up / sum_down;
+		}
+	}
+}
+
+/*
+FCM
+uikを更新する
+*/
+__device__ void __device_update_uik(float *uik, float *dik, int iSize, int kSize, float m){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m - 1.0)));
+			}
+			uik[i*kSize + k] = 1.0 / sum;
+		}
+	}
+}
+
+/*
+アニーリングでuikを更新する
+*/
+__device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
+			}
+			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
+			uik[i*kSize + k] = up / sum;
+		}
+	}
+}
+
+/*
+目的関数JFCMを定義しておく
+最適解の判断に利用する
+*/
+__device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize){
+	float total = 0.0;
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			total += pow(uik[i*kSize + k], 1.0f) * dik[i*kSize + k];
+		}
+	}
+	*jfcm = total;
+}
+
+__device__ void __device_jtsallis(float *uik, float *dik, float *j, float q, float T, int iSize, int kSize){
+	float total = 0.0;
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float ln_q = (pow(uik[i*kSize + k], 1.0f - q) - 1.0f) / (1.0f - q);
+			total += pow(uik[i*kSize + k], q) * dik[i*kSize + k] + T * pow(uik[i*kSize + k], q) *ln_q;
+		}
+	}
+	*j = total;
+}
+
+/*
+FCM
+dikを更新する
+*/
+__device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0.0;
+			for (int p = 0; p < pSize; p++){
+				sum += pow(float(xk[k*pSize + p] - vi[i*pSize + p]), 2.0f);
+			}
+			//	dik->setValue(k, i, sqrt(sum));
+			//dik[k*iSize + i] = sum;
+			dik[i*kSize + k] = sum;
+		}
+	}
+}
+
+
+/*
+FCM
+距離を測る
+*/
+__device__ void __device_distance(float* d, float *v1, float *v2, int pSize){
+	int p;
+	double total = 0.0;
+	for (p = 0; p < pSize; p++){
+		/* v1[p] * v2[p] */
+		/* 1次元配列で確保されている場合に備えてあえてこうしています */
+		total += pow(*(v1 + p) - *(v2 + p), 2);
+	}
+	*d = total;
+}
+
+/*
+arrayをコピーする
+*/
+__device__ void __device_copy_float(float *src, float *dst, int size){
+	for (int i = 0; i < size; i++){
+		dst[i] = src[i];
+	}
+}
+
+/*
+FCM
+*/
+__global__ void device_FCM(DataSet *ds){
+	int i = threadIdx.x;
+	float err;
+	float t;
+	float jfcm;
+
+	//	クラスタリングしない
+	if (ds->is_finished){
+		return;
+	}
+
+	//	uikを更新する
+	__device_update_dik(ds[i].dik, ds[i].vi, ds[i].xk, CLUSTER_NUM, DATA_NUM, P);
+	__device_update_uik_with_T(ds[i].uik, ds[i].dik, CLUSTER_NUM, DATA_NUM, ds[i].q, ds[i].T[ds[i].t_pos]);
+
+	//	ついでにjfcmも求めておく
+	__device_jtsallis(ds[i].uik, ds[i].dik, &jfcm, ds[i].q, ds[i].T[ds[i].t_pos], CLUSTER_NUM, DATA_NUM);
+	ds[i].jfcm = jfcm;
+
+	//	viのバックアップを取る
+	__device_copy_float(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM*P);
+
+	//	vi(centroids)を更新する
+	__device_update_vi(ds[i].uik, ds[i].xk, ds[i].vi, CLUSTER_NUM, DATA_NUM, P, ds[i].q);
+
+	//	同一温度での収束を判定
+	//	収束していなければそのままの温度で繰り返す
+	__device_calc_convergence(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM, P, &err);
+	//err= 0; // 温度を下げる
+	if (EPSIRON < err){
+		//	温度を下げずに関数を終了
+		ds[i].t_pos++;
+		ds[i].T[ds[i].t_pos] = ds[i].T[ds[i].t_pos - 1];
+		return;
+	}
+
+	//	前の温度との収束を判定
+	//	収束していたら終了
+	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
+	//err = 0; // 終了
+	if (err < EPSIRON){
+		//	この時点でクラスタリングを終了する
+		ds[i].is_finished = TRUE;
+		return;
+	}
+
+	//	バックアップ
+	//	温度を下げる前のviを保存
+	__device_copy_float(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM*P);
+
+	// 収束していなければ温度を下げて繰り返す
+	ds[i].t_pos++;
+	ds[i].t_change_num++;
+	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P);
+	ds[i].T[ds[i].t_pos] = t;
+
+
+
+}
+
+
+
+
+
+/*
+関数node_expand()
+遷移先の温度を決定し、子供を生成する。
+ここではFCM法の実行はせず、親から値を引き継ぐのみ。
+node_execute()でFCM法を1回だけ実行する。
+TODO: 生成する子供の数, 次回温度の決定。
+*/
+/*
+void node_expand(const node_t *node, std::vector<node_t> *children){
+if (node->temp_scenario.size() > 2) return;
+
+for (int i = 0; i < 3; i++){
+node_t child;
+std::copy(node->temp_scenario.begin(), node->temp_scenario.end(), std::back_inserter(child.temp_scenario));
+child.temp_scenario.push_back(node->temp_scenario.back() / 2.0f);
+children->push_back(child);
+}
+
+}
+*/
+
+
+
+/*
+ノードをGPUで展開する
+*/
+__global__ void gpu_node_execute(int *results){
+	int idx = threadIdx.x;
+	results[idx] = threadIdx.x;
+}
+
+
+/*
+幅優先探索(Breadth First Search)
+*/
+/*
+int BFS(node_t node){
+int n = 0; // これまでに探索したノード数
+std::list<node_t> open_list;	//	オープンリスト
+
+open_list.push_back(node);
+while (!open_list.empty()){
+node = open_list.front();
+for (int i = 0; i<node.temp_scenario.size(); i++){
+printf("%f ", node.temp_scenario[i]);
+}
+printf("\n");
+
+if (node_is_goal(&node)){
+return n;
+}
+
+n++;
+open_list.pop_front();
+
+//	CPUで子ノードを展開する
+std::vector<node_t> children;
+node_expand(&node, &children);
+
+//	CPU→GPUデータコピー
+//	node_t型のままでは利用できないので変換しておく
+thrust::device_vector<int> d_results(8);
+
+for (auto it = children.begin(); it != children.end(); it++){
+
+}
+
+//	並列でFCM実行する
+gpu_node_execute << <1, 8 >> >(thrust::raw_pointer_cast(d_results.data()));
+
+//	CPU→GPUデータコピー
+// node_t型に変換しておく
+//auto it_results = d_results.begin
+for (auto it = children.begin(); it != children.end(); it++){
+(*it).result.push_back(0);
+}
+
+//	open_listに追加して再度探索
+int n = children.size();
+for (int i = 0; i < n; i++){
+open_list.push_back(children[i]);
+}
+
+}
+return -1;
+}
+*/
+
