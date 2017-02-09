@@ -30,10 +30,10 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 適宜値を変えること
 ########################################################
 */
-#define CLUSTER_NUM 2 /*クラスタ数*/
-#define DATA_NUM 40 /*データ数*/
+#define CLUSTER_NUM 3 /*クラスタ数*/
+#define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define P 2 /* 次元数 */
+#define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 128 /* データセット数 */
 
@@ -128,9 +128,38 @@ void init_datasets(DataSet ds[]){
 	*/
 }
 
+void iris_datasets(DataSet ds[]){
+	FILE *fp = fopen("data/iris.txt", "r");
+	float tmp_xk[DATA_NUM*P];
+	for (int k = 0; k < DATA_NUM; k++){
+		for (int p = 0; p < P; p++){
+			float tmp;
+			fscanf(fp, "%f", &tmp);
+			tmp_xk[k * P + p] = tmp;
+		}
+	}
+	for (int j = 0; j < N; j++){
+		ds[j].t_pos = 0;
+		ds[j].q = 2.0;		//	とりあえずqは2.0固定
+		ds[j].T[0] = pow(20.0f, (j + 1.0f - 64.0f) / 64.0f);  // Thighで初期温度を決定
+		ds[j].is_finished = FALSE;
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			for (int p = 0; p < P; p++){
+				ds[j].vi[i * P + p] = (double)rand() / RAND_MAX;
+			}
+		}
+		for (int k = 0; k < DATA_NUM; k++){
+			for (int p = 0; p < P; p++){
+				ds[j].xk[k * P + p] = tmp_xk[k * P + p];
+			}
+		}
+	}
+	fclose(fp);
+}
+
 void print_result(const DataSet *ds){
 	printf("T=");
-	for (int i = 0; i < TEMP_SCENARIO_NUM; i++) printf("%1.2f ", ds->T[i]);
+	for (int i = 0; i < TEMP_SCENARIO_NUM && ds->T[i]!=0.0; i++) printf("%1.2f ", ds->T[i]);
 	printf("\n");
 	printf("q=%f", ds->q);
 	printf("\n");
