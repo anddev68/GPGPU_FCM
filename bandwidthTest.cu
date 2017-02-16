@@ -39,7 +39,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 32 /* データセット数 */
+#define N 128 /* データセット数 */
 
 typedef unsigned  int uint;
 using namespace std;
@@ -162,7 +162,7 @@ void iris_datasets(DataSet ds[]){
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
 			for (int p = 0; p < P; p++){
-				ds[j].vi[i * P + p] = my_random(0.0, 5.0);
+				ds[j].vi[i * P + p] = my_random(0.0, 10.0);
 			}
 		}
 		for (int k = 0; k < DATA_NUM; k++){
@@ -204,7 +204,8 @@ void print_result(const DataSet *ds){
 	*/
 }
 
-int compare(int *target, int *sample, int size){
+int compare(const int *target, int *sample, int size){
+
 	//	[0,1,2]の組み合わせの作成用配列と正解パターン
 	vector<int> pattern = vector<int>();
 	vector<int> good_pattern = vector<int>();
@@ -221,9 +222,14 @@ int compare(int *target, int *sample, int size){
 		//	エラー数
 		int error = 0;
 		//	すべてのデータについて、
-		for (int i = 0; i < size; i++){
-			int index = pattern[sample[i]];	//	置換する
-			if (target[i] != index) error++;	//	誤った分類
+		for (int j = 0; j < size; j++){
+			if (0 <= sample[j] && sample[j] < 3){
+				int index = pattern[sample[j]];	//	置換する
+				if (target[j] != index) error++;	//	誤った分類
+			}
+			else{
+				error++;
+			}
 		}
 		//	誤分類数が少なければ入れ替える
 		if (error < min_error){
@@ -235,7 +241,9 @@ int compare(int *target, int *sample, int size){
 
 	//	置換パターンを利用して、インデックスを置換する
 	for (int i = 0; i < size; i++){
-		sample[i] = good_pattern[sample[i]];
+		if (0 <= sample[i] && sample[i] < 3){
+			sample[i] = good_pattern[sample[i]];
+		}
 	}
 	return min_error;
 }
@@ -244,18 +252,6 @@ int compare(int *target, int *sample, int size){
 int main(){
 	srand((unsigned)time(NULL));
 
-	/*
-	int targets[150];
-	int results[150];
-	for (int i = 0; i < 50; i++) targets[i] = 0;
-	for (int i = 50; i < 100; i++) targets[i] = 1;
-	for (int i = 100; i < 150; i++) targets[i] = 2;
-	for (int i = 0; i < 49; i++) results[i] = 2;
-	for (int i = 49; i < 100; i++) results[i] = 1;
-	for (int i = 100; i < 150; i++) results[i] = 0;
-	printf("%d\n", compare(targets, results, DATA_NUM));
-	return;
-	*/
 
 	/*
 	ホストとデバイスのデータ領域を確保する
@@ -271,10 +267,6 @@ int main(){
 	*/
 	//const float listT[N] = { 50.0, 20.0, 10.0, 5.0, 2.0, 1.0};
 	init_datasets(&h_ds[0]);
-
-	printf("vi=\n");
-	for (int j = 0; j < CLUSTER_NUM; j++) printf("%1.2f %1.2f\n", h_ds[0].vi[j*P + 0], h_ds[0].vi[j*P + 1]);
-	printf("-----------------------\n");
 
 	/*
 	ここからBFSで展開する
@@ -315,7 +307,29 @@ int main(){
 	for (int i = 50; i < 100; i++) targets[i] = 1;
 	for (int i = 100; i < 150; i++) targets[i] = 2;
 	for (int i = 0; i < N; i++){
+		/*
+		for (int j = 0; j < DATA_NUM; j++){
+			printf("%d ", h_ds[i].results[j]);
+		}
+		printf("\n");
+		*/
 		h_ds[i].error = compare(targets, h_ds[i].results, DATA_NUM);
+	}
+
+	/*
+		uikをファイルに書き込む
+	*/
+	for (int n = 0; n < N; n++){
+		char buf[256];
+		sprintf(buf, "out/uik%d.txt", n);
+		FILE *fp2 = fopen(buf, "w");
+		for (int k = 0; k < DATA_NUM; k++){
+			for (int i = 0; i < CLUSTER_NUM; i++){
+				fprintf(fp2, "%f ", h_ds[n].uik[i*DATA_NUM + k]);
+			}
+			fprintf(fp2, "\n");
+		}
+		fclose(fp2);
 	}
 
 	/* resultsを書き込む */
@@ -565,7 +579,7 @@ __global__ void device_FCM(DataSet *ds){
 	float jfcm;
 
 	//	クラスタリングしない
-	if (ds->is_finished){
+	if (ds[i].is_finished){
 		return;
 	}
 
@@ -601,7 +615,7 @@ __global__ void device_FCM(DataSet *ds){
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
-		 __device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
+		__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 		//int cnt;
 		//__device_iris_error(ds[i].uik, &cnt, CLUSTER_NUM, DATA_NUM);
 		//ds[i].error = cnt;
