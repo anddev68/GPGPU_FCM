@@ -24,20 +24,25 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include "CpuGpuData.cuh"
 #include <time.h>
 
+
 /*
 ############################ Warning #####################
 GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 適宜値を変えること
 ########################################################
 */
+
+#define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
+
 #define CLUSTER_NUM 3 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 128 /* データセット数 */
+#define N 32 /* データセット数 */
 
 typedef unsigned  int uint;
+using namespace std;
 
 /*
 デバイスに渡すため/受け取るのデータセット
@@ -52,14 +57,18 @@ typedef struct{
 	float vi[CLUSTER_NUM*P];
 	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
 	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
-	int results[DATA_NUM];	//	実行結果
+	int error;	//	エラー数
 	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
+	int results[DATA_NUM];	//	実行結果
 	float q;		//	q値
 	int t_pos;		//	温度シナリオ参照位置
 	int t_change_num;	//	温度変更回数
 	float jfcm;
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
+
+
+
 
 
 __global__ void device_FCM(DataSet *ds);
@@ -73,9 +82,16 @@ __device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize,
 __device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize);
 __device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, float T, int iSize, int kSize);
 __device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
+__device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize);
 
 float my_random(float min, float max){
 	return min + (float)(rand() * (max - min) / RAND_MAX);
+}
+
+void deepcopy_vector(vector<int> *src, vector<int> *dst){
+	for (int i = 0; i < src->size(); i++){
+		(*dst)[i] = (*src)[i];
+	}	
 }
 
 void listT_to_str(std::stringstream ss, float *T, int size){
@@ -97,7 +113,7 @@ void init_datasets(DataSet ds[]){
 
 	for (int j = 0; j < N; j++){
 		ds[j].t_pos = 0;
-		ds[j].q = 2.0;		//	とりあえずqは2.0固定
+		ds[j].q = 5.0;		//	とりあえずqは2.0固定
 		ds[j].T[0] = pow(20.0f, (j + 1.0f - N/2.0f) / (N/2.0f));  // Thighで初期温度を決定
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
@@ -146,7 +162,7 @@ void iris_datasets(DataSet ds[]){
 		ds[j].is_finished = FALSE;
 		for (int i = 0; i < CLUSTER_NUM; i++){
 			for (int p = 0; p < P; p++){
-				ds[j].vi[i * P + p] = (double)rand() / RAND_MAX;
+				ds[j].vi[i * P + p] = my_random(0.0, 5.0);
 			}
 		}
 		for (int k = 0; k < DATA_NUM; k++){
@@ -161,15 +177,21 @@ void iris_datasets(DataSet ds[]){
 void print_result(const DataSet *ds){
 	printf("T=");
 	for (int i = 0; i < TEMP_SCENARIO_NUM && ds->T[i]!=0.0; i++) printf("%1.2f ", ds->T[i]);
-	printf("\n");
-	printf("q=%f", ds->q);
-	printf("\n");
-	printf("results=");
+	//printf("\n");
+	//printf("q=%f", ds->q);
+	//printf("\n");
+
+	/*
+	printf("results=\n");
 	for (int i = 0; i < DATA_NUM; i++){
 			printf("%d ", ds->results[i]);
+			if ((i + 1) % 20 == 0) printf("\n");
 	}
 	printf("\n");
-	printf("jfcm = %f\n", ds->jfcm);
+	*/
+
+	printf("error=%d\n", ds->error);
+	//printf("jfcm = %f\n", ds->jfcm);
 
 	/*
 	printf("vi_bak=");
@@ -182,10 +204,58 @@ void print_result(const DataSet *ds){
 	*/
 }
 
+int compare(int *target, int *sample, int size){
+	//	[0,1,2]の組み合わせの作成用配列と正解パターン
+	vector<int> pattern = vector<int>();
+	vector<int> good_pattern = vector<int>();
+	for (int i = 0; i < 3; i++){
+		pattern.push_back(i);
+		good_pattern.push_back(0);
+	}
+
+	//	エラー最小値
+	int min_error = INT_MAX;
+
+	//	すべての置換パターンでマッチング
+	do{
+		//	エラー数
+		int error = 0;
+		//	すべてのデータについて、
+		for (int i = 0; i < size; i++){
+			int index = pattern[sample[i]];	//	置換する
+			if (target[i] != index) error++;	//	誤った分類
+		}
+		//	誤分類数が少なければ入れ替える
+		if (error < min_error){
+			min_error = error;
+			deepcopy_vector(&pattern, &good_pattern);
+		}
+
+	} while (next_permutation(pattern.begin(), pattern.end()));
+
+	//	置換パターンを利用して、インデックスを置換する
+	for (int i = 0; i < size; i++){
+		sample[i] = good_pattern[sample[i]];
+	}
+	return min_error;
+}
 
 
 int main(){
 	srand((unsigned)time(NULL));
+
+	/*
+	int targets[150];
+	int results[150];
+	for (int i = 0; i < 50; i++) targets[i] = 0;
+	for (int i = 50; i < 100; i++) targets[i] = 1;
+	for (int i = 100; i < 150; i++) targets[i] = 2;
+	for (int i = 0; i < 49; i++) results[i] = 2;
+	for (int i = 49; i < 100; i++) results[i] = 1;
+	for (int i = 100; i < 150; i++) results[i] = 0;
+	printf("%d\n", compare(targets, results, DATA_NUM));
+	return;
+	*/
 
 	/*
 	ホストとデバイスのデータ領域を確保する
@@ -209,7 +279,7 @@ int main(){
 	/*
 	ここからBFSで展開する
 	*/
-	for (int i = 0; i < 1; i++){
+	for (int i = 0; i < 20; i++){
 
 		/*
 		HOSTメモリからGPUメモリへコピー
@@ -219,7 +289,13 @@ int main(){
 		/*
 		DataSetInに対しFCM法を適用することにより、DataSetOutを取得する
 		*/
-		device_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
+		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
+		cudaDeviceSynchronize();
+
+		cudaError_t error = cudaGetLastError();
+		if (error != cudaSuccess) {
+			fprintf(stderr, "%s\n", cudaGetErrorString(error));
+		}
 
 		/*
 		GPUメモリからHOSTメモリへコピー
@@ -229,56 +305,51 @@ int main(){
 
 	}
 
-	/*
-		uikをファイルに書き込む
-	*/
-	for (int n = 0; n < N; n++){
-		char buf[256];
-		sprintf(buf, "out/uik%d.txt", n);
-		FILE *fp2 = fopen(buf, "w");
-		for (int k = 0; k < DATA_NUM; k++){
-			for (int i = 0; i < CLUSTER_NUM; i++){
-				fprintf(fp2, "%f ", h_ds[n].uik[i*DATA_NUM + k]);
-			}
-			fprintf(fp2, "\n");
-		}
-		fclose(fp2);
-	}
+
 
 	/*
-	Datasetをファイルに書き込む
+		解を作成
 	*/
-	/*
-	FILE *fp3 = fopen("data/ds.txt", "w");
-	fprintf(fp3, "Number,q,T,vi.x,vi.y,objFunc\n");
+	int targets[150];
+	for (int i = 0; i < 50; i++) targets[i] = 0;
+	for (int i = 50; i < 100; i++) targets[i] = 1;
+	for (int i = 100; i < 150; i++) targets[i] = 2;
 	for (int i = 0; i < N; i++){
-		for (int j = 0; j < CLUSTER_NUM; j++){
-			std::stringstream ss;
-			for (int k = 0; k < TEMP_SCENARIO_NUM; k++) ss << h_ds[i].T[k] << "->";
-			fprintf(fp3, "%d,%f,%s,%f,%f,%f\n", i, h_ds[i].q, ss.str().c_str(), h_ds[i].vi[j*P + 0], h_ds[i].vi[j*P + 1], h_ds[i].jfcm);
-		}
+		h_ds[i].error = compare(targets, h_ds[i].results, DATA_NUM);
 	}
-	fclose(fp3);
-	*/
+
+	/* resultsを書き込む */
+	for (int n = 0; n < N; n++){
+		char buf[256];
+		sprintf(buf, "out/results%d.txt", n);
+		FILE *fp3 = fopen(buf, "w");
+		for (int i = 0; i < DATA_NUM; i++){
+			fprintf(fp3, "%d ", h_ds[n].results[i]);
+		}
+		fclose(fp3);
+	}
+
 
 	/*
 		結果を表示する
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
 	for (int i = 0; i < N; i++){
-		printf("[%d] ", i);
-		print_result(&h_ds[i]);
+			printf("[%d] ", i);
+			print_result(&h_ds[i]);
 	}
+
+
 
 	/*
-		最も良い解を表示する
-	*/
-	printf("--------------------The Clustering Result----------------------\n");
-	for (int i = 0; i < N; i++){
-		printf("[%d] ", i);
-		print_result(&h_ds[i]);
+	cudaError_t err = cudaDeviceReset();
+	cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		fprintf(stderr, "%s\n", cudaGetErrorString(err));
 	}
+	*/
 
+	return 0;
 }
 
 
@@ -364,7 +435,6 @@ __device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, in
 	}
 }
 
-
 /*
 eval
 */
@@ -379,6 +449,40 @@ __device__ void __device_eval(float *uik, int *results, int iSize, int kSize){
 			}
 		}
 	}
+
+}
+
+/*
+	正しいIRISのデータと比較していくつ間違っているか取得する
+	50x3とする
+	暫定的な処置です
+*/
+__device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize){
+	int sum[] = { 0, 0, 0 };
+	int err = 0;
+	
+	for (int k = 0; k < kSize; k++){
+		float maxValue = uik[0*kSize +k];
+		int maxIndex = 0;
+		for (int i = 1; i < iSize; i++){
+			//	最も大きいindexを取得
+			float value = uik[i*kSize + k];
+			if (maxValue < value){
+				value = maxValue;
+				maxIndex = i;
+			}
+		}
+		//	大きいindexに合計値を足す
+		sum[maxIndex] ++;
+		
+		//	50個になったらエラーを計算する
+		if (k == 49 || k == 99 || k == 149){
+			err += 50 - MAX3(sum[0], sum[1], sum[2]);
+			for (int m = 0; m <  3; m++) sum[m] = 0;
+		}	
+		
+	}
+	*error = err;
 
 }
 
@@ -482,7 +586,7 @@ __global__ void device_FCM(DataSet *ds){
 	//	同一温度での収束を判定
 	//	収束していなければそのままの温度で繰り返す
 	__device_calc_convergence(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM, P, &err);
-	err= 0; // 温度を下げる
+	//err= 0; // 温度を下げる
 	if (EPSIRON < err){
 		//	温度を下げずに関数を終了
 		ds[i].t_pos++;
@@ -493,11 +597,14 @@ __global__ void device_FCM(DataSet *ds){
 	//	前の温度との収束を判定
 	//	収束していたら終了
 	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
-	err = 0; // 終了
+	//err = 0; // 終了
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
-		__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
+		 __device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
+		//int cnt;
+		//__device_iris_error(ds[i].uik, &cnt, CLUSTER_NUM, DATA_NUM);
+		//ds[i].error = cnt;
 		return;
 	}
 
