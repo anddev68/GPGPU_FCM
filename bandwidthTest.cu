@@ -67,10 +67,6 @@ typedef struct{
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
 
-
-
-
-
 __global__ void device_FCM(DataSet *ds);
 __device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err);
 __device__ void __device_VFA(float *, float, int, float, float);
@@ -84,284 +80,64 @@ __device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, 
 __device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
 __device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize);
 
-float my_random(float min, float max){
-	return min + (float)(rand() * (max - min) / RAND_MAX);
-}
-
-void deepcopy_vector(vector<int> *src, vector<int> *dst){
-	for (int i = 0; i < src->size(); i++){
-		(*dst)[i] = (*src)[i];
-	}	
-}
-
-void listT_to_str(std::stringstream ss, float *T, int size){
-	for (int i = 0; i < size; i++){
-		ss << T[i];
-	}
-}
-
-void init_datasets(DataSet ds[]){
-	float tmp_xk[DATA_NUM*P];
-	for (int k = 0; k < DATA_NUM / 2; k++){
-		tmp_xk[k * P + 0] = my_random(0.0, 0.5);
-		tmp_xk[k * P + 1] = my_random(0.0, 0.5);
-	}
-	for (int k = DATA_NUM / 2; k < DATA_NUM; k++){
-		tmp_xk[k * P + 0] = my_random(0.5, 1.0);
-		tmp_xk[k * P + 1] = my_random(0.5, 1.0);
-	}
-
-	for (int j = 0; j < N; j++){
-		ds[j].t_pos = 0;
-		ds[j].q = 5.0;		//	とりあえずqは2.0固定
-		ds[j].T[0] = pow(20.0f, (j + 1.0f - N/2.0f) / (N/2.0f));  // Thighで初期温度を決定
-		ds[j].is_finished = FALSE;
-		for (int i = 0; i < CLUSTER_NUM; i++){
-			//	ランダム初期化
-			ds[j].vi[i * P + 0] = (double)rand() / RAND_MAX;
-			ds[j].vi[i * P + 1] = (double)rand() / RAND_MAX;
-		}
-		for (int k = 0; k < DATA_NUM; k++){
-			ds[j].xk[k * P + 0] = tmp_xk[k * P + 0];
-			ds[j].xk[k * P + 1] = tmp_xk[k * P + 1];
-		}
-
-	}
-
-
-	/*
-	for (int k = 0; k < DATA_NUM / 2; k++){
-	ds->xk[k * P + 0] = my_random(0.0, 0.5);
-	ds->xk[k * P + 1] = my_random(0.0, 0.5);
-	//h_ds[0].xk[k * P + 0] = my_random(0.0, 5.0);
-	//h_ds[0].xk[k * P + 1] = my_random(0.0, 0.5);
-	}
-	for (int k = DATA_NUM / 2; k < DATA_NUM; k++){
-	//[0].xk[k * P + 0] = my_random(0.75, 1.0);
-	//h_ds[0].xk[k * P + 1] = my_random(0.75, 1.0);
-	ds->xk[k * P + 0] = my_random(0.5, 1.0);
-	ds->xk[k * P + 1] = my_random(0.5, 1.0);
-	}
-	*/
-}
-
-void iris_datasets(DataSet ds[]){
-	FILE *fp = fopen("data/iris.txt", "r");
-	float tmp_xk[DATA_NUM*P];
-	for (int k = 0; k < DATA_NUM; k++){
-		for (int p = 0; p < P; p++){
-			float tmp;
-			fscanf(fp, "%f", &tmp);
-			tmp_xk[k * P + p] = tmp;
-		}
-	}
-	for (int j = 0; j < N; j++){
-		ds[j].t_pos = 0;
-		ds[j].q = 2.0;		//	とりあえずqは2.0固定
-		ds[j].T[0] = pow(20.0f, (j + 1.0f - N / 2.0f) / (N / 2.0f));  // Thighで初期温度を決定
-		ds[j].is_finished = FALSE;
-		for (int i = 0; i < CLUSTER_NUM; i++){
-			for (int p = 0; p < P; p++){
-				ds[j].vi[i * P + p] = my_random(0.0, 10.0);
-			}
-		}
-		for (int k = 0; k < DATA_NUM; k++){
-			for (int p = 0; p < P; p++){
-				ds[j].xk[k * P + p] = tmp_xk[k * P + p];
-			}
-		}
-	}
-	fclose(fp);
-}
-
-void print_result(const DataSet *ds){
-	printf("T=");
-	for (int i = 0; i < TEMP_SCENARIO_NUM && ds->T[i]!=0.0; i++) printf("%1.2f ", ds->T[i]);
-	//printf("\n");
-	//printf("q=%f", ds->q);
-	//printf("\n");
-
-	/*
-	printf("results=\n");
-	for (int i = 0; i < DATA_NUM; i++){
-			printf("%d ", ds->results[i]);
-			if ((i + 1) % 20 == 0) printf("\n");
-	}
-	printf("\n");
-	*/
-
-	printf("error=%d\n", ds->error);
-	//printf("jfcm = %f\n", ds->jfcm);
-
-	/*
-	printf("vi_bak=");
-	for (int i = 0; i < CLUSTER_NUM; i++){
-	for (int p = 0; p < P; p++){
-	printf("%1.2f ", ds->vi_bak[i*P + p]);
-	}
-	}
-	printf("\n");
-	*/
-}
-
-int compare(const int *target, int *sample, int size){
-
-	//	[0,1,2]の組み合わせの作成用配列と正解パターン
-	vector<int> pattern = vector<int>();
-	vector<int> good_pattern = vector<int>();
-	for (int i = 0; i < 3; i++){
-		pattern.push_back(i);
-		good_pattern.push_back(0);
-	}
-
-	//	エラー最小値
-	int min_error = INT_MAX;
-
-	//	すべての置換パターンでマッチング
-	do{
-		//	エラー数
-		int error = 0;
-		//	すべてのデータについて、
-		for (int j = 0; j < size; j++){
-			if (0 <= sample[j] && sample[j] < 3){
-				int index = pattern[sample[j]];	//	置換する
-				if (target[j] != index) error++;	//	誤った分類
-			}
-			else{
-				error++;
-			}
-		}
-		//	誤分類数が少なければ入れ替える
-		if (error < min_error){
-			min_error = error;
-			deepcopy_vector(&pattern, &good_pattern);
-		}
-
-	} while (next_permutation(pattern.begin(), pattern.end()));
-
-	//	置換パターンを利用して、インデックスを置換する
-	for (int i = 0; i < size; i++){
-		if (0 <= sample[i] && sample[i] < 3){
-			sample[i] = good_pattern[sample[i]];
-		}
-	}
-	return min_error;
-}
-
-
 int main(){
 	srand((unsigned)time(NULL));
 
-
 	/*
-	ホストとデバイスのデータ領域を確保する
-	DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
-	確保数1にすると並列化を行わず、通常VFA+FCMで行う
+		ホストとデバイスのデータ領域を確保する
+		DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
+		確保数1にすると並列化を行わず、通常VFA+FCMで行う
 	*/
 	thrust::device_vector<DataSet> d_ds(N);
 	thrust::host_vector<DataSet> h_ds(N);
 
 	/*
-	初期状態を作成する
-	TODO:ランダムパターン, 既存のデータセットパターンを用意する必要あり
+		vectorの初期化
 	*/
-	//const float listT[N] = { 50.0, 20.0, 10.0, 5.0, 2.0, 1.0};
-	init_datasets(&h_ds[0]);
+	for(int i=0; i<N; i++){
+		h_ds[i].t_pos = 0;
+		h_ds[i].q = 2.0;
+		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		h_ds[i].is_finished = FALSE;
+		h_ds[i].error = -1;
+		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1,0);
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 1.0);
+	}
 
 	/*
-	ここからBFSで展開する
+		クラスタリングを繰り返し行う
 	*/
-	for (int i = 0; i < 20; i++){
-
-		/*
-		HOSTメモリからGPUメモリへコピー
-		*/
+	for(int it=0; it<20; i++){
 		d_ds = h_ds;
 
-		/*
-		DataSetInに対しFCM法を適用することにより、DataSetOutを取得する
-		*/
 		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
 		cudaDeviceSynchronize();
 
-		cudaError_t error = cudaGetLastError();
-		if (error != cudaSuccess) {
-			fprintf(stderr, "%s\n", cudaGetErrorString(error));
-		}
-
-		/*
-		GPUメモリからHOSTメモリへコピー
-		イコールで代入できるらしい
-		*/
 		h_ds = d_ds;
-
-	}
-
-
-
-	/*
-		解を作成
-	*/
-	int targets[150];
-	for (int i = 0; i < 50; i++) targets[i] = 0;
-	for (int i = 50; i < 100; i++) targets[i] = 1;
-	for (int i = 100; i < 150; i++) targets[i] = 2;
-	for (int i = 0; i < N; i++){
-		/*
-		for (int j = 0; j < DATA_NUM; j++){
-			printf("%d ", h_ds[i].results[j]);
-		}
-		printf("\n");
-		*/
-		h_ds[i].error = compare(targets, h_ds[i].results, DATA_NUM);
 	}
 
 	/*
-		uikをファイルに書き込む
+		結果をファイルにダンプする
 	*/
 	for (int n = 0; n < N; n++){
 		char buf[256];
 		sprintf(buf, "out/uik%d.txt", n);
-		FILE *fp2 = fopen(buf, "w");
-		for (int k = 0; k < DATA_NUM; k++){
-			for (int i = 0; i < CLUSTER_NUM; i++){
-				fprintf(fp2, "%f ", h_ds[n].uik[i*DATA_NUM + k]);
-			}
-			fprintf(fp2, "\n");
-		}
-		fclose(fp2);
-	}
+		FILE *fp = fopen(buf, "w");
 
-	/* resultsを書き込む */
-	for (int n = 0; n < N; n++){
-		char buf[256];
-		sprintf(buf, "out/results%d.txt", n);
-		FILE *fp3 = fopen(buf, "w");
-		for (int i = 0; i < DATA_NUM; i++){
-			fprintf(fp3, "%d ", h_ds[n].results[i]);
-		}
-		fclose(fp3);
+		fclose(fp);
 	}
 
 
 	/*
-		結果を表示する
+		クラスタリング結果を表示する
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
-	for (int i = 0; i < N; i++){
-			printf("[%d] ", i);
-			print_result(&h_ds[i]);
+	for (int j = 0; j < N; j++){
+		printf("[%d] T=", j);
+		for (int i = 0; i < TEMP_SCENARIO_NUM && ds[j].T[i]!=0.0; i++) printf("%1.2f ", ds[j].T[i]);
+		printf(" e=%d\n", ds[j].error);
 	}
 
-
-
-	/*
-	cudaError_t err = cudaDeviceReset();
-	cudaDeviceSynchronize();
-	if (err != cudaSuccess) {
-		fprintf(stderr, "%s\n", cudaGetErrorString(err));
-	}
-	*/
 
 	return 0;
 }
