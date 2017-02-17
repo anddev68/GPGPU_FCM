@@ -24,6 +24,8 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include "CpuGpuData.cuh"
 #include <time.h>
 
+#include "FCM.h"
+
 
 /*
 ############################ Warning #####################
@@ -34,12 +36,12 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 
-#define CLUSTER_NUM 3 /*クラスタ数*/
+#define CLUSTER_NUM 1 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define P 4 /* 次元数 */
+#define P 1 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 128 /* データセット数 */
+#define N 1 /* スレッド数*/
 
 typedef unsigned  int uint;
 using namespace std;
@@ -97,17 +99,17 @@ int main(){
 	for(int i=0; i<N; i++){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
-		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		h_ds[i].T[0] = pow(2.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
 		h_ds[i].is_finished = FALSE;
 		h_ds[i].error = -1;
-		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1,0);
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 1.0);
+		make_sample_sets(h_ds[i].xk, P*DATA_NUM, -1.0, 1.0);
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -1.0, 1.0);
 	}
 
 	/*
 		クラスタリングを繰り返し行う
 	*/
-	for(int it=0; it<20; i++){
+	for(int it=0; it<20; it++){
 		d_ds = h_ds;
 
 		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
@@ -115,16 +117,25 @@ int main(){
 
 		h_ds = d_ds;
 	}
+	
 
 	/*
 		結果をファイルにダンプする
 	*/
 	for (int n = 0; n < N; n++){
-		char buf[256];
+		char buf[32], buf2[32], buf3[32];
 		sprintf(buf, "out/uik%d.txt", n);
+		sprintf(buf2, "out/results%d.txt", n);
+		sprintf(buf3, "out/xk%d.txt", n);
 		FILE *fp = fopen(buf, "w");
-
+		FILE *fp2 = fopen(buf2, "w");
+		FILE *fp3 = fopen(buf3, "w");
+		fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
+		fprintf_results(fp2, h_ds[n].results, DATA_NUM);
+		fprintf_xk(fp3, h_ds[n].xk, DATA_NUM, P);
 		fclose(fp);
+		fclose(fp2);
+		fclose(fp3);
 	}
 
 
@@ -134,8 +145,8 @@ int main(){
 	printf("--------------------The Clustering Result----------------------\n");
 	for (int j = 0; j < N; j++){
 		printf("[%d] T=", j);
-		for (int i = 0; i < TEMP_SCENARIO_NUM && ds[j].T[i]!=0.0; i++) printf("%1.2f ", ds[j].T[i]);
-		printf(" e=%d\n", ds[j].error);
+		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
+		printf(" e=%d\n", h_ds[j].error);
 	}
 
 
@@ -202,7 +213,7 @@ __device__ void __device_update_uik(float *uik, float *dik, int iSize, int kSize
 		for (int k = 0; k < kSize; k++){
 			float sum = 0;
 			for (int j = 0; j < iSize; j++){
-				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m - 1.0)));
+				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m- 1.0)));
 			}
 			uik[i*kSize + k] = 1.0 / sum;
 		}
@@ -220,7 +231,7 @@ __device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, in
 				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
 			}
 			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
-			uik[i*kSize + k] = up / sum;
+			uik[i*kSize + k] = up;
 		}
 	}
 }

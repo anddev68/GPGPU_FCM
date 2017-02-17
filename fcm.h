@@ -6,7 +6,8 @@
 #define __FCM_H__
 
 #include <stdio.h>
-
+#include <math.h>
+#include <stdlib.h>
 
 /*
     make_datasets()
@@ -40,6 +41,16 @@ void make_iris_150_targes(int *targets);
 */
 void fprintf_uik(FILE* fp, float *uik, int iSize, int kSize);
 
+/*
+	xkを書き出す
+*/
+void fprintf_xk(FILE* fp, float *xk, int kSize, int pSize);
+
+
+/*
+	ファイルにresultsを書き出す
+*/
+void fprintf_results(FILE *fp, int *results, int size);
 
 
 
