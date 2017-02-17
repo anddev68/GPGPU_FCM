@@ -36,12 +36,12 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 
-#define CLUSTER_NUM 2 /*クラスタ数*/
+#define CLUSTER_NUM 3 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define P 2 /* 次元数 */
+#define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 1 /* スレッド数*/
+#define N 128 /* スレッド数*/
 
 typedef unsigned  int uint;
 using namespace std;
@@ -99,11 +99,15 @@ int main(){
 	for(int i=0; i<N; i++){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
-		h_ds[i].T[0] = pow(2.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
 		h_ds[i].is_finished = FALSE;
 		h_ds[i].error = -1;
-		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -1.0, 1.0);
+		//	make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
+		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
+			fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
+			exit(1);
+		}
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
 	}
 
 	/*
@@ -143,9 +147,12 @@ int main(){
 		クラスタリング結果を表示する
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
+	int targets[150];
+	make_iris_150_targes(targets);
 	for (int j = 0; j < N; j++){
 		printf("[%d] T=", j);
 		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
+		h_ds[j].error = compare(targets, h_ds[j].results, DATA_NUM);
 		printf(" e=%d\n", h_ds[j].error);
 	}
 
