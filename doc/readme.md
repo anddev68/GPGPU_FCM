@@ -5,7 +5,7 @@
 ### 実験方法
 通常のFCMを複数のスレッドで並列に実行。
 
-![temperature](pararell1.png)
+![temperature](pararell1.PNG)
 <center>図1 各スレッドの動作</center>
 
 
@@ -38,7 +38,7 @@
 * 温度の下げ方。
 
 
-![temperature](pararell2.png)
+![temperature](pararell2.PNG)
 <center>図2 状態交換</center>
 
 
