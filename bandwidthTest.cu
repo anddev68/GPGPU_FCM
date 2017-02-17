@@ -36,10 +36,10 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 
-#define CLUSTER_NUM 1 /*クラスタ数*/
+#define CLUSTER_NUM 2 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define P 1 /* 次元数 */
+#define P 2 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 1 /* スレッド数*/
 
@@ -102,7 +102,7 @@ int main(){
 		h_ds[i].T[0] = pow(2.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
 		h_ds[i].is_finished = FALSE;
 		h_ds[i].error = -1;
-		make_sample_sets(h_ds[i].xk, P*DATA_NUM, -1.0, 1.0);
+		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
 		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -1.0, 1.0);
 	}
 
@@ -231,7 +231,7 @@ __device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, in
 				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
 			}
 			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
-			uik[i*kSize + k] = up;
+			uik[i*kSize + k] = up / sum;
 		}
 	}
 }
