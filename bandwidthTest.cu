@@ -26,6 +26,7 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 
 #include "FCM.h"
 #include "PFCM.h"
+#include "Logger.h"
 
 
 /*
@@ -36,11 +37,13 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 */
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
+#define CASE break; case
 
 #define CLUSTER_NUM 3 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
 #define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
+#define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 128 /* スレッド数*/
@@ -62,13 +65,13 @@ typedef struct{
 	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
 	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
 	int error[ERROR_SCENARIO_NUM];	//	エラーシナリオ
+	float obj_func[MAX_CLUSTERING_NUM]; // 目的関数のシナリオ
 	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
 	int results[DATA_NUM];	//	実行結果
 	float q;		//	q値
 	int t_pos;		//	温度シナリオ参照位置
 	int t_change_num;	//	温度変更回数
 	int clustering_num;	//	クラスタリング回数
-	float jfcm;
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
 
@@ -141,24 +144,22 @@ int main(){
 	/*
 		結果をファイルにダンプする
 	*/
-	for (int n = 0; n < N; n++){
-		char buf[32], buf2[32], buf3[32], buf4[32];
-		sprintf(buf, "out/uik%d.txt", n);
-		sprintf(buf2, "out/results%d.txt", n);
-		sprintf(buf3, "out/xk%d.txt", n);
-		sprintf(buf4, "out/err%d.txt", n);
-		FILE *fp = fopen(buf, "w");
-		FILE *fp2 = fopen(buf2, "w");
-		FILE *fp3 = fopen(buf3, "w");
-		FILE *fp4 = fopen(buf4, "w");
-		fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
-		fprintf_results(fp2, h_ds[n].results, DATA_NUM);
-		fprintf_xk(fp3, h_ds[n].xk, DATA_NUM, P);
-		fprintf_error(fp4, h_ds[n].error, h_ds[n].clustering_num);
-		fclose(fp);
-		fclose(fp2);
-		fclose(fp3);
-		fclose(fp4);
+	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
+	char buf[32];
+	for (int i = 0; i < 6; i++){
+		for (int n = 0; n < N; n++){
+			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
+			FILE *fp = fopen(buf, "w");
+			switch (i){
+			case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
+			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
+			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
+			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
+			CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
+			CASE 5: fprintf_pair_df(fp, h_ds[n].error, h_ds[n].obj_func, h_ds[n].clustering_num, ' ');
+			}
+			fclose(fp);
+		}
 	}
 
 
@@ -400,7 +401,7 @@ __global__ void device_FCM(DataSet *ds){
 
 	//	ついでにjfcmも求めておく
 	__device_jtsallis(ds[i].uik, ds[i].dik, &jfcm, ds[i].q, ds[i].T[ds[i].t_pos], CLUSTER_NUM, DATA_NUM);
-	ds[i].jfcm = jfcm;
+	ds[i].obj_func[ds[i].clustering_num] = jfcm;
 
 	//	viのバックアップを取る
 	__device_copy_float(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM*P);
