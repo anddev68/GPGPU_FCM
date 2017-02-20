@@ -25,6 +25,7 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include <time.h>
 
 #include "FCM.h"
+#include "PFCM.h"
 
 
 /*
@@ -39,6 +40,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define CLUSTER_NUM 3 /*クラスタ数*/
 #define DATA_NUM 150 /*データ数*/
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
+#define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 128 /* スレッド数*/
@@ -59,12 +61,13 @@ typedef struct{
 	float vi[CLUSTER_NUM*P];
 	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
 	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
-	int error;	//	エラー数
+	int error[ERROR_SCENARIO_NUM];	//	エラーシナリオ
 	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
 	int results[DATA_NUM];	//	実行結果
 	float q;		//	q値
 	int t_pos;		//	温度シナリオ参照位置
 	int t_change_num;	//	温度変更回数
+	int clustering_num;	//	クラスタリング回数
 	float jfcm;
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
@@ -94,14 +97,20 @@ int main(){
 	thrust::host_vector<DataSet> h_ds(N);
 
 	/*
+		正確な分類
+	*/
+	int targets[150];
+	make_iris_150_targes(targets);
+
+	/*
 		vectorの初期化
 	*/
 	for(int i=0; i<N; i++){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
+		h_ds[i].clustering_num = 0;
 		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
 		h_ds[i].is_finished = FALSE;
-		h_ds[i].error = -1;
 		//	make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
 		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
 			fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
@@ -112,6 +121,7 @@ int main(){
 
 	/*
 		クラスタリングを繰り返し行う
+		BFSバージョン
 	*/
 	for(int it=0; it<20; it++){
 		d_ds = h_ds;
@@ -120,6 +130,11 @@ int main(){
 		cudaDeviceSynchronize();
 
 		h_ds = d_ds;
+
+		//	エラー計算
+		for (int n = 0; n < N; n++){
+			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
+		}
 	}
 	
 
@@ -127,19 +142,23 @@ int main(){
 		結果をファイルにダンプする
 	*/
 	for (int n = 0; n < N; n++){
-		char buf[32], buf2[32], buf3[32];
+		char buf[32], buf2[32], buf3[32], buf4[32];
 		sprintf(buf, "out/uik%d.txt", n);
 		sprintf(buf2, "out/results%d.txt", n);
 		sprintf(buf3, "out/xk%d.txt", n);
+		sprintf(buf4, "out/err%d.txt", n);
 		FILE *fp = fopen(buf, "w");
 		FILE *fp2 = fopen(buf2, "w");
 		FILE *fp3 = fopen(buf3, "w");
+		FILE *fp4 = fopen(buf4, "w");
 		fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
 		fprintf_results(fp2, h_ds[n].results, DATA_NUM);
 		fprintf_xk(fp3, h_ds[n].xk, DATA_NUM, P);
+		fprintf_error(fp4, h_ds[n].error, h_ds[n].clustering_num);
 		fclose(fp);
 		fclose(fp2);
 		fclose(fp3);
+		fclose(fp4);
 	}
 
 
@@ -147,13 +166,11 @@ int main(){
 		クラスタリング結果を表示する
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
-	int targets[150];
-	make_iris_150_targes(targets);
 	for (int j = 0; j < N; j++){
 		printf("[%d] T=", j);
 		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
-		h_ds[j].error = compare(targets, h_ds[j].results, DATA_NUM);
-		printf(" e=%d\n", h_ds[j].error);
+		int error = compare(targets, h_ds[j].results, DATA_NUM);
+		printf(" e=%d\n", error);
 	}
 
 
@@ -391,6 +408,11 @@ __global__ void device_FCM(DataSet *ds){
 	//	vi(centroids)を更新する
 	__device_update_vi(ds[i].uik, ds[i].xk, ds[i].vi, CLUSTER_NUM, DATA_NUM, P, ds[i].q);
 
+	__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
+
+	//	クラスタリング回数を増やしておく
+	ds[i].clustering_num++;
+
 	//	同一温度での収束を判定
 	//	収束していなければそのままの温度で繰り返す
 	__device_calc_convergence(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM, P, &err);
@@ -405,11 +427,12 @@ __global__ void device_FCM(DataSet *ds){
 	//	前の温度との収束を判定
 	//	収束していたら終了
 	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
+
 	//err = 0; // 終了
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
-		__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
+		//__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 		//int cnt;
 		//__device_iris_error(ds[i].uik, &cnt, CLUSTER_NUM, DATA_NUM);
 		//ds[i].error = cnt;
@@ -426,7 +449,7 @@ __global__ void device_FCM(DataSet *ds){
 	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P);
 	ds[i].T[ds[i].t_pos] = t;
 
-
+	
 
 }
 
