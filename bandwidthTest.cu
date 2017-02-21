@@ -153,8 +153,12 @@ int main(){
 		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
 		cudaDeviceSynchronize();
 
-
 		h_ds = d_ds;
+
+		//	エラー計算
+		for (int n = 0; n < N; n++){
+			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
+		}
 
 		//	viの平均値や分散を調べる
 		//	各クラスタごとに
@@ -164,19 +168,14 @@ int main(){
 			for (int p = 0; p < P; p++){
 				float total = 0.0;
 				for (int n = 0; n < N; n++){
-					total +=  h_ds[n].vi[k*P + p];
+					total += h_ds[n].vi[k*P + p];
 				}
-				//	平均値表示
-				printf("%f,", total/N);
+				//	平均値で置き換えてみる
+				total /= N;
+				for (int n = 0; n < N; n++){
+					h_ds[n].vi[k*P + p] = total;
+				}
 			}
-			printf(" ");
-		}
-		printf("\n");
-
-
-		//	エラー計算
-		for (int n = 0; n < N; n++){
-			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
 		}
 	}
 	
@@ -187,8 +186,8 @@ int main(){
 	/*
 		結果をファイルにダンプする
 	*/
+	
 	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
-
 	for (int i = 0; i < 6; i++){
 		for (int n = 0; n < N; n++){
 			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
@@ -204,12 +203,12 @@ int main(){
 			fclose(fp);
 		}
 	}
+	
 
 
 	/*
 		クラスタリング結果を表示する
 	*/
-	/*
 	printf("--------------------The Clustering Result----------------------\n");
 	for (int j = 0; j < N; j++){
 		printf("[%d] T=", j);
@@ -217,7 +216,7 @@ int main(){
 		int error = compare(targets, h_ds[j].results, DATA_NUM);
 		printf(" e=%d\n", error);
 	}
-	*/
+	
 
 
 	return 0;
