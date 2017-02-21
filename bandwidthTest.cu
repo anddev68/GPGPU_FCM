@@ -46,7 +46,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 1024 /* スレッド数*/
+#define N 32 /* スレッド数*/
 
 typedef unsigned  int uint;
 using namespace std;
@@ -104,6 +104,8 @@ int main(){
 	*/
 	int targets[150];
 	make_iris_150_targes(targets);
+	char buf[32];
+
 
 	/*
 		vectorの初期化
@@ -132,15 +134,22 @@ int main(){
 		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
 		cudaDeviceSynchronize();
 
+		//	TODO: 再配置
 		h_ds = d_ds;
-
+		FILE *fp = fopen(buf, "w");
+		sprintf(buf, "out/vi/vi%d.txt", it);
+		for (int i = 0; i < N; i++){
+			//	各スレッドごとのviを出力
+			fprintf_xk(fp, h_ds[i].vi, CLUSTER_NUM, P);
+		}
+		fclose(fp);
+		
 		//	エラー計算
 		for (int n = 0; n < N; n++){
 			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
 		}
 	}
 	
-
 	printf("Clustering done.\n");
 	printf("Starting writing.\n");
 
@@ -149,7 +158,7 @@ int main(){
 		結果をファイルにダンプする
 	*/
 	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
-	char buf[32];
+
 	for (int i = 0; i < 6; i++){
 		for (int n = 0; n < N; n++){
 			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
