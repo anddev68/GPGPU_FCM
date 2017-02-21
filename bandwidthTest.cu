@@ -36,17 +36,30 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 ########################################################
 */
 
+//	IRISのデータを使う場合は#defineすること
+#define IRIS
+
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 #define CASE break; case
 
-#define CLUSTER_NUM 3 /*クラスタ数*/
-#define DATA_NUM 150 /*データ数*/
+#ifdef IRIS
+	#define CLUSTER_NUM 3 /*クラスタ数*/
+	#define DATA_NUM 150 /*データ数*/
+	#define P 4 /* 次元数 */
+#else
+	#define CLUSTER_NUM 2 /*クラスタ数*/
+	#define DATA_NUM 150 /*データ数*/
+	#define P 2 /* 次元数 */
+#endif
+
 #define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
 #define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
 #define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
-#define P 4 /* 次元数 */
+
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 32 /* スレッド数*/
+
+
 
 typedef unsigned  int uint;
 using namespace std;
@@ -116,12 +129,18 @@ int main(){
 		h_ds[i].clustering_num = 0;
 		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
 		h_ds[i].is_finished = FALSE;
-		//	make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
+
+#ifdef IRIS
 		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
 			fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
 			exit(1);
 		}
 		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
+#else
+		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 1.0);
+#endif
+	
 	}
 
 	/*
