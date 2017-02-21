@@ -46,7 +46,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
 #define P 4 /* 次元数 */
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 128 /* スレッド数*/
+#define N 1024 /* スレッド数*/
 
 typedef unsigned  int uint;
 using namespace std;
@@ -140,6 +140,10 @@ int main(){
 		}
 	}
 	
+
+	printf("Clustering done.\n");
+	printf("Starting writing.\n");
+
 
 	/*
 		結果をファイルにダンプする
