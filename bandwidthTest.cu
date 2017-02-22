@@ -148,6 +148,28 @@ int main(){
 		BFSバージョン
 	*/
 	for(int it=0; it<20; it++){
+
+
+		if (0){
+			//	各クラスタごとに
+			printf("[%d] ", it);
+			for (int k = 0; k < CLUSTER_NUM; k++){
+				//	各次元ごとに
+				for (int p = 0; p < P; p++){
+					float total = 0.0;
+					for (int n = 0; n < N; n++){
+						total += h_ds[n].vi[k*P + p];
+					}
+					//	平均値で置き換えてみる
+					total /= N;
+					for (int n = 0; n < N; n++){
+						h_ds[n].vi[k*P + p] = total;
+					}
+				}
+			}
+		}
+
+
 		d_ds = h_ds;
 
 		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
@@ -157,26 +179,9 @@ int main(){
 
 		//	エラー計算
 		for (int n = 0; n < N; n++){
-			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
+			h_ds[n].error[h_ds[n].clustering_num-1] = compare(targets, h_ds[n].results, DATA_NUM);
 		}
 
-		//	viの平均値や分散を調べる
-		//	各クラスタごとに
-		printf("[%d] ",it);
-		for (int k = 0; k < CLUSTER_NUM; k++){
-			//	各次元ごとに
-			for (int p = 0; p < P; p++){
-				float total = 0.0;
-				for (int n = 0; n < N; n++){
-					total += h_ds[n].vi[k*P + p];
-				}
-				//	平均値で置き換えてみる
-				total /= N;
-				for (int n = 0; n < N; n++){
-					h_ds[n].vi[k*P + p] = total;
-				}
-			}
-		}
 	}
 	
 	printf("Clustering done.\n");
@@ -186,7 +191,6 @@ int main(){
 	/*
 		結果をファイルにダンプする
 	*/
-	
 	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
 	for (int i = 0; i < 6; i++){
 		for (int n = 0; n < N; n++){
@@ -197,7 +201,7 @@ int main(){
 			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
 			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
 			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
-			CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
+			//CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
 			CASE 5: fprintf_pair_df(fp, h_ds[n].error, h_ds[n].obj_func, h_ds[n].clustering_num, ' ');
 			}
 			fclose(fp);
@@ -443,17 +447,14 @@ __global__ void device_FCM(DataSet *ds){
 	__device_update_dik(ds[i].dik, ds[i].vi, ds[i].xk, CLUSTER_NUM, DATA_NUM, P);
 	__device_update_uik_with_T(ds[i].uik, ds[i].dik, CLUSTER_NUM, DATA_NUM, ds[i].q, ds[i].T[ds[i].t_pos]);
 
-	//	ついでにjfcmも求めておく
-	__device_jtsallis(ds[i].uik, ds[i].dik, &jfcm, ds[i].q, ds[i].T[ds[i].t_pos], CLUSTER_NUM, DATA_NUM);
-	ds[i].obj_func[ds[i].clustering_num] = jfcm;
+	//	分類結果を更新する
+	__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 
 	//	viのバックアップを取る
 	__device_copy_float(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM*P);
 
 	//	vi(centroids)を更新する
 	__device_update_vi(ds[i].uik, ds[i].xk, ds[i].vi, CLUSTER_NUM, DATA_NUM, P, ds[i].q);
-
-	__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 
 	//	クラスタリング回数を増やしておく
 	ds[i].clustering_num++;
@@ -472,15 +473,10 @@ __global__ void device_FCM(DataSet *ds){
 	//	前の温度との収束を判定
 	//	収束していたら終了
 	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
-
 	//err = 0; // 終了
 	if (err < EPSIRON){
 		//	この時点でクラスタリングを終了する
 		ds[i].is_finished = TRUE;
-		//__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
-		//int cnt;
-		//__device_iris_error(ds[i].uik, &cnt, CLUSTER_NUM, DATA_NUM);
-		//ds[i].error = cnt;
 		return;
 	}
 
