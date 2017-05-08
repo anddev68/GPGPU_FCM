@@ -32,6 +32,7 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include "ConfigureJsonLoader.h"
 #include "IrisLoader.h"
 #include "RandomLoader.h"
+#include "PCADataset.cuh"
 
 /*
 ############################ Warning #####################
@@ -92,6 +93,8 @@ typedef struct{
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
 
+
+
 __global__ void device_FCM(DataSet *ds);
 __device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err);
 __device__ void __device_VFA(float *, float, int, float, float);
@@ -128,9 +131,10 @@ int main(){
 		exit(-1);
 	}
 
+	/* Paralell Cluster Analysisで実行する */
 
-	/* クラスタリングを行う */
-	
+
+	//	thrust::device_vectorにコピー
 
 
 	/* 並列化なしでクラスタリングを行う */
@@ -145,6 +149,20 @@ int main(){
 	*/
 
 
+
+
+	/*
+		クラスタリング結果を表示する
+	*/
+	printf("--------------------The Clustering Result----------------------\n");
+	int height = loader.dataN;
+	int width = loader.clusterC;
+	for (int k = 0; k < height; k++){
+		for (int i = 0; i < width; i++){
+			fprintf(stdout, "%f ", xk[i*height + k]);
+		}
+		fprintf(stdout, "\n");
+	}
 
 
 	while (1);
@@ -258,18 +276,6 @@ int main(){
 	}
 	
 
-
-	/*
-		クラスタリング結果を表示する
-	*/
-	printf("--------------------The Clustering Result----------------------\n");
-	for (int j = 0; j < N; j++){
-		printf("[%d] T=", j);
-		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
-		int error = compare(targets, h_ds[j].results, DATA_NUM);
-		printf(" e=%d\n", error);
-	}
-	
 
 
 	return 0;

@@ -19,14 +19,16 @@ public:
 		for (int k = 0; k < kSize; k++){
 			for (int p = 0; p < pSize; p++){
 				float tmp = __random(min, max);
-				xk.push_back(tmp);
+				//xk->push_back(tmp);
+				xk[k * pSize + p] = tmp;
 			}
 		}
 
 		for (int c = 0; c < cSize; c++){
 			for (int p = 0; p < pSize; p++){
 				float r = __random(min, max);
-				vi.push_back(r);
+				//vi->push_back(r);
+				vi[c * pSize + p] = r;
 			}
 		}
 

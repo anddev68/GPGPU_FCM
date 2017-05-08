@@ -19,8 +19,8 @@
 
 	例
 	```
-		{
-		"parallel": true,
+	{
+		"type": "pca",
 		"dataset": "iris",
 		"random": {
 			"N": 150,

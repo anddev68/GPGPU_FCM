@@ -64,6 +64,4 @@ void fprintf_results(FILE *fp, int *results, int size);
 
 
 
-
-
 #endif

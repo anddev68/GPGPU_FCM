@@ -59,6 +59,7 @@ void fprintf_xk(FILE* fp, float *xk, int kSize, int pSize){
 	__fprint_2df(fp, xk, pSize, kSize);
 }
 
+
 void make_datasets(float *xk, int size, float min, float max){
     for(int i=0; i<size; i++){
         xk[i] = __random(min, max);

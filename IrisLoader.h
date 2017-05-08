@@ -26,8 +26,8 @@ public:
 			for (int p = 0; p < pSize; p++){
 				float tmp;
 				fscanf(fp, "%f", &tmp);
-				//xk[k * pSize + p] = tmp;
-				xk.push_back(tmp);
+				xk[k * pSize + p] = tmp;
+				//xk->push_back(tmp);
 			}
 			char buf[32];
 			fscanf(fp, "%s", buf);
@@ -37,7 +37,8 @@ public:
 		for (int c = 0; c < cSize; c++){
 			for (int p = 0; p < pSize; p++){
 				float r = __random(min, max);
-				vi.push_back(r);
+				vi[c * pSize + p] = r;
+				//vi->push_back(r);
 			}
 		}
 
