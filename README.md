@@ -1,4 +1,40 @@
 # GPGPU for Fuzzy c-means
+汎用性を高めたFCM実行プログラム
+
+## 設定ファイルの設定方法
++ type = [pca|]
+	現在は未実装で，このパラメータは無効です．
+	+ pca: parallel cluster analysis implementation
++ dataset = [iris|random]
+	irisのデータセットまたはrandomでデータセットを生成する．
++ random
+	データセットの生成方法をrandomにした場合のみ有効なパラメータです．
+	その他の場合は無視されます．
+	+ N データ数
+	+ P 次元数
+	+ C クラスタ数
+	+ min ランダムで割り振られる最小値
+	+ max ランダムで割り振られる最大値
+
+
+	例
+	```
+		{
+		"parallel": true,
+		"dataset": "iris",
+		"random": {
+			"N": 150,
+			"P": 4,
+			"C": 3,
+			"min": 0.0,
+			"max": 1.0,
+		}
+	}
+	```
+	
+
+
+
 
 ## Abstract
 * 目的  

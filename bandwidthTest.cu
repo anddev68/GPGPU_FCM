@@ -23,11 +23,15 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include "Timer.h"
 #include "CpuGpuData.cuh"
 #include <time.h>
+#include <fstream>  // std::ifstream
 
 #include "FCM.h"
 #include "PFCM.h"
 #include "Logger.h"
 
+#include "ConfigureJsonLoader.h"
+#include "IrisLoader.h"
+#include "RandomLoader.h"
 
 /*
 ############################ Warning #####################
@@ -102,15 +106,59 @@ __device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
 __device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize);
 
 int main(){
-	srand((unsigned)time(NULL));
+
+	/* 設定ファイルを読み込む */
+	ConfigureJsonLoader loader("config.json");
+	vector<float> xk(loader.dataN * loader.dataP);
+	vector<float> vi(loader.clusterC * loader.dataP);
+
+	/* データファイルを読み込む */
+	if (loader.dataset == ConfigureJsonLoader::DATASET_IRIS){
+		printf("Irisで初期化します\n");
+		IrisLoader irisLoader("data/iris.txt");
+		irisLoader.load(xk, vi);
+	}
+	else if(loader.dataset == ConfigureJsonLoader::DATASET_RANDOM){
+		printf("randomで初期化します\n");
+		RandomLoader randomLoader(loader.dataN, loader.clusterC, loader.dataP, loader.min, loader.max);
+		randomLoader.load(xk, vi);
+	}
+	else{
+		fprintf(stderr, "設定ファイルが正しくありません\n");
+		exit(-1);
+	}
+
+
+	/* クラスタリングを行う */
+	
+
+
+	/* 並列化なしでクラスタリングを行う */
+
 
 	/*
-		ホストとデバイスのデータ領域を確保する
-		DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
-		確保数1にすると並列化を行わず、通常VFA+FCMで行う
+		FCM並列化パターンに従い，アニーリングを行う
+		-  温度並列アニーリング
+			- 初期温度並列アニーリング
+			- 冷却関数並列アニーリング
+		- 帰属度関数計算並列化
 	*/
-	thrust::device_vector<DataSet> d_ds(N);
-	thrust::host_vector<DataSet> h_ds(N);
+
+
+
+
+	while (1);
+	return 0;
+
+
+	/*
+	ホストとデバイスのデータ領域を確保する
+	DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
+	確保数1にすると並列化を行わず、通常VFA+FCMで行う
+	*/
+	thrust::device_vector<DataSet> d_ds(loader.dataN);
+	thrust::host_vector<DataSet> h_ds(loader.dataN);
+
 
 	/*
 		正確な分類
