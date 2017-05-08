@@ -57,7 +57,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
 
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 32 /* スレッド数*/
+#define N 128  /* スレッド数*/
 
 
 
@@ -127,7 +127,8 @@ int main(){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
 		h_ds[i].clustering_num = 0;
-		h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		//h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		h_ds[i].T[0] = 2.0;	//	2.0固定
 		h_ds[i].is_finished = FALSE;
 
 #ifdef IRIS
@@ -485,9 +486,11 @@ __global__ void device_FCM(DataSet *ds){
 	__device_copy_float(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM*P);
 
 	// 収束していなければ温度を下げて繰り返す
+	//	cdをうまいことちょうせいする
+	float cd = (4.0-1.01)*i/N + 1.01;
 	ds[i].t_pos++; 
 	ds[i].t_change_num++;
-	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P);
+	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, cd);
 	ds[i].T[ds[i].t_pos] = t;
 
 	
