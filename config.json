@@ -1,0 +1,11 @@
+	{
+		"parallel": true,
+		"dataset": "random",
+		"random": {
+			"N": 150,
+			"P": 4,
+			"C": 3,
+			"min": 0.0,
+			"max": 1.0,
+		}
+	}
