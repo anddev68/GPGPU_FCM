@@ -98,6 +98,18 @@ void make_iris_150_targes(int *targets){
 	for (int i = 100; i < 150; i++) targets[i] = 2;
 }
 
+double distance(float *v1, float *v2, int pSize){
+	int p;
+	double total = 0.0;
+	for (p = 0; p < pSize; p++){
+		/* v1[p] * v2[p] */
+		/* 1次元配列で確保されている場合に備えてあえてこうしています */
+		total += pow(*(v1 + p) - *(v2 + p), 2);
+	}
+	return total;
+}
+
+
 
 int compare(int *target, int *sample, int size){
 	//	[0,1,2]の組み合わせの作成用配列と正解パターン

@@ -1,5 +1,10 @@
 # GPGPU for Fuzzy c-means
 
+## Branch
++ /pca
+Parallel Cluster Analysis
+
+
 ## Abstract
 * 目的  
 q値クラスタリングにおける(1)計算速度の向上 (2)解の精度向上を

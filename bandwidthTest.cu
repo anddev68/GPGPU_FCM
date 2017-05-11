@@ -52,14 +52,10 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 	#define P 2 /* 次元数 */
 #endif
 
-#define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
-#define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
-
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 128  /* スレッド数*/
+#define N 1  /* スレッド数*/
 
-
+#define DATA_NUM_EACH_PROCESSOR (DATA_NUM/N)
 
 typedef unsigned  int uint;
 using namespace std;
@@ -73,19 +69,11 @@ FCMではdik, uik...
 typedef struct{
 	float dik[DATA_NUM*CLUSTER_NUM];
 	float uik[DATA_NUM*CLUSTER_NUM];
-	float xk[DATA_NUM*P];
+	float xk[DATA_NUM_EACH_PROCESSOR*P];
 	float vi[CLUSTER_NUM*P];
 	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
 	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
-	int error[ERROR_SCENARIO_NUM];	//	エラーシナリオ
-	float obj_func[MAX_CLUSTERING_NUM]; // 目的関数のシナリオ
-	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
 	int results[DATA_NUM];	//	実行結果
-	float q;		//	q値
-	int t_pos;		//	温度シナリオ参照位置
-	int t_change_num;	//	温度変更回数
-	int clustering_num;	//	クラスタリング回数
-	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
 
 __global__ void device_FCM(DataSet *ds);
@@ -104,126 +92,130 @@ __device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize
 int main(){
 	srand((unsigned)time(NULL));
 
-	/*
-		ホストとデバイスのデータ領域を確保する
-		DataSetIn, DataSetOutがFCMに用いるデータの集合、構造体なので、子ノード数分確保すればよい
-		確保数1にすると並列化を行わず、通常VFA+FCMで行う
-	*/
-	thrust::device_vector<DataSet> d_ds(N);
-	thrust::host_vector<DataSet> h_ds(N);
-
-	/*
-		正確な分類
-	*/
+	float xk_org[DATA_NUM*P];
+	float vi_org[CLUSTER_NUM*P];
+	float w0[P];
 	int targets[150];
-	make_iris_150_targes(targets);
-	char buf[32];
+	float E1;
+	float DK;
+	float EK;
+	float PBMK;
+	float K = CLUSTER_NUM;
+
+	thrust::host_vector<float> h_xk(DATA_NUM*P);
+	thrust::host_vector<float> h_uik(CLUSTER_NUM*DATA_NUM);
+	thrust::host_vector<float> h_vi(CLUSTER_NUM*P);
 
 
 	/*
-		vectorの初期化
-	*/
-	for(int i=0; i<N; i++){
-		h_ds[i].t_pos = 0;
-		h_ds[i].q = 2.0;
-		h_ds[i].clustering_num = 0;
-		//h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
-		h_ds[i].T[0] = 2.0;	//	2.0固定
-		h_ds[i].is_finished = FALSE;
-
-#ifdef IRIS
-		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
-			fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
-			exit(1);
-		}
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
-#else
-		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 1.0);
-#endif
-	
+		Step0. データセットの初期化
+	*/	
+	make_iris_150_targes(targets);	
+	make_first_centroids(vi_org, P*CLUSTER_NUM, 0.0, 5.0);
+	if (make_iris_datasets(xk_org, DATA_NUM, P) != 0){
+		fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
+		exit(1);
 	}
 
 	/*
-		クラスタリングを繰り返し行う
-		BFSバージョン
+		Step1. (Master Processer)
+		各スレッドにデータをN/pとなるようにデータセットを分割する．
+		ここでは分割を行わず，GPUへのコピー処理のみ行う
+		N: データ数
+		p: スレッド数
 	*/
-	for(int it=0; it<20; it++){
-
-
-		if (0){
-			//	各クラスタごとに
-			printf("[%d] ", it);
-			for (int k = 0; k < CLUSTER_NUM; k++){
-				//	各次元ごとに
-				for (int p = 0; p < P; p++){
-					float total = 0.0;
-					for (int n = 0; n < N; n++){
-						total += h_ds[n].vi[k*P + p];
-					}
-					//	平均値で置き換えてみる
-					total /= N;
-					for (int n = 0; n < N; n++){
-						h_ds[n].vi[k*P + p] = total;
-					}
-				}
-			}
-		}
-
-
-		d_ds = h_ds;
-
-		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
-		cudaDeviceSynchronize();
-
-		h_ds = d_ds;
-
-		//	エラー計算
-		for (int n = 0; n < N; n++){
-			h_ds[n].error[h_ds[n].clustering_num-1] = compare(targets, h_ds[n].results, DATA_NUM);
-		}
-
+	for (int i = 0; i < h_xk.size(); i++){
+		h_xk[i] = xk_org[i];
 	}
-	
-	printf("Clustering done.\n");
-	printf("Starting writing.\n");
-
+	for (int i = 0; i < h_vi.size(); i++){
+		h_vi[i] = vi_org[i];
+	}
 
 	/*
-		結果をファイルにダンプする
+		Step2. (All Processesors)
+		ローカルデータで中央を計算し，全てのプロセッサーで共有
+		PBM factor E1をローカルデータで計算し，ルートに送る．
+		The function of E1
+		このファクターは依存しない，クラスタ数に．
+		\sum_{t=1...N}{d(x(t),w_0)}
+		w_0: 全体の中心
 	*/
-	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
-	for (int i = 0; i < 6; i++){
-		for (int n = 0; n < N; n++){
-			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
-			FILE *fp = fopen(buf, "w");
-			switch (i){
-			case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
-			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
-			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
-			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
-			//CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
-			CASE 5: fprintf_pair_df(fp, h_ds[n].error, h_ds[n].obj_func, h_ds[n].clustering_num, ' ');
-			}
-			fclose(fp);
-		}
-	}
-	
-
-
-	/*
-		クラスタリング結果を表示する
-	*/
-	printf("--------------------The Clustering Result----------------------\n");
+	E1 = 0.0f;
+	make_first_centroids(w0, P, 0.0, 1.0);	//	w0はランダムにしてみる
 	for (int j = 0; j < N; j++){
-		printf("[%d] T=", j);
-		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
-		int error = compare(targets, h_ds[j].results, DATA_NUM);
-		printf(" e=%d\n", error);
+		for (int t = 0; t < DATA_NUM_EACH_PROCESSOR; t++){
+			E1 += distance(&h_xk[t*P + DATA_NUM_EACH_PROCESSOR*P*j], w0, P);
+		}
 	}
+	printf("E1=%f\n", E1);
+
+
+	/*
+		Step3. (Master Processor)
+		初期クラスタ中心を設定し，放流する．
+		ループの最初で全てのクラスタは同じクラスタ中心を持つ．
+	*/
 	
 
+	/*
+		Step4. (All Processors)
+		収束が達成されるまで，距離を計算する．
+		uikとviを計算する．
+	*/
+	float m = 2.0;
+	for (int t = 0; t < DATA_NUM; t++){
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			float sum = 0.0;
+			for (int j = 0; j < CLUSTER_NUM; j++){
+				sum += pow(distance(&h_xk[t*CLUSTER_NUM], &h_vi[i*P], P) / distance(&h_xk[t*CLUSTER_NUM], &h_vi[j*P], P), 2.0f / (m - 1.0f));
+			}
+			h_uik[CLUSTER_NUM*t+i] = 1.0f / sum;
+		}
+	}
 
+
+	/*
+		Step5. (Alll Processors)
+		PBM factor EKをローカルデータで計算し，ルートに送る．
+	*/
+	EK = 0.0f;
+	for (int i = 0; i < DATA_NUM; i++){
+		for (int k = 0; k < CLUSTER_NUM; k++){
+			EK += h_uik[CLUSTER_NUM*i+k] * pow( distance(&h_xk[i*P], &h_vi[k*P], P), 2);
+		}
+	}
+	printf("EK=%f\n", EK);
+
+
+
+	/*
+		Step6. (Master Processor)
+		PBM indexを統合し，保存する．
+		クラスタ数の範囲がカバーされたら終了，そうでなければStep 3.からやり直す．
+	*/
+	DK = 0.0f;
+	for (int i = 0; i < K; i++){
+		for (int j = 0; j < K; j++){
+			DK = MAX(DK, distance(&h_vi[i*P], &h_vi[j*P], P));
+		}
+	}
+	PBMK = pow((1.0f / K) * (E1 / EK) * DK, 2);
+
+	printf("DK=%f\n", DK);
+	printf("PBMK=%f\n", PBMK);
+
+	/*
+		Step7. 結果出力
+	*/
+	for (int t = 0; t < DATA_NUM; t++){
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			printf("%f ", h_uik[t*CLUSTER_NUM+i]);
+		}
+		printf("\n");
+	}
+
+
+	while (1);
 	return 0;
 }
 
@@ -434,6 +426,7 @@ __device__ void __device_copy_float(float *src, float *dst, int size){
 	FCM
 */
 __global__ void device_FCM(DataSet *ds){
+	/*
 	int i = threadIdx.x;
 	float err;
 	float t;
@@ -493,7 +486,7 @@ __global__ void device_FCM(DataSet *ds){
 	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, cd);
 	ds[i].T[ds[i].t_pos] = t;
 
-	
+	*/
 
 }
 

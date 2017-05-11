@@ -61,7 +61,10 @@ void fprintf_xk(FILE* fp, float *xk, int kSize, int pSize);
 */
 void fprintf_results(FILE *fp, int *results, int size);
 
-
+/*
+	ベクトルv1とv2の距離を計算する
+*/
+double distance(float *v1, float *v2, int pSize);
 
 
 
