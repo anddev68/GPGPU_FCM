@@ -177,9 +177,13 @@ int main(){
 					h_ds[n].vi[k*P + p] = total;
 				}
 				*/
-				//	平均値を出力
-				printf("%f ", total/N);
-
+				//	平均値と最大誤差をを出力
+				float max = 0.0;
+				for (int n = 0; n < N; n++){
+					max = MAX(max, pow(total/N - h_ds[n].vi[k*P + p],2));
+				}
+				//printf("%.3f(ε=%.3f) ", total/N, max);
+				printf("%.3f ", total / N);
 			}
 			
 
