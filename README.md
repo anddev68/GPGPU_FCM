@@ -1,5 +1,10 @@
 # GPGPU for Fuzzy c-means
 
+## Branch
+- dev 今開発中の内容
+最初のほうはばらばらでやって，途中からviを一緒にする．
+- master ここは触らない
+
 ## Abstract
 * 目的  
 q値クラスタリングにおける(1)計算速度の向上 (2)解の精度向上を

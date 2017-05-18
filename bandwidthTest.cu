@@ -162,7 +162,7 @@ int main(){
 
 		//	viの平均値や分散を調べる
 		//	各クラスタごとに
-		printf("[%d] ",it);
+		printf("[%d] \n",it);
 		for (int k = 0; k < CLUSTER_NUM; k++){
 			//	各次元ごとに
 			for (int p = 0; p < P; p++){
@@ -171,11 +171,19 @@ int main(){
 					total += h_ds[n].vi[k*P + p];
 				}
 				//	平均値で置き換えてみる
+				/*
 				total /= N;
 				for (int n = 0; n < N; n++){
 					h_ds[n].vi[k*P + p] = total;
 				}
+				*/
+				//	平均値を出力
+				printf("%f ", total/N);
+
 			}
+			
+
+			printf("\n");
 		}
 	}
 	
