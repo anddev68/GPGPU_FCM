@@ -127,8 +127,8 @@ int main(){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
 		h_ds[i].clustering_num = 0;
-		//h_ds[i].T[0] = pow(20.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
-		h_ds[i].T[0] = 2.0;	//	2.0固定
+		h_ds[i].T[0] = pow(20000.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
+		//h_ds[i].T[0] = 2.0;	//	2.0固定
 		h_ds[i].is_finished = FALSE;
 
 #ifdef IRIS
@@ -149,27 +149,6 @@ int main(){
 		BFSバージョン
 	*/
 	for(int it=0; it<20; it++){
-
-
-		if (0){
-			//	各クラスタごとに
-			printf("[%d] ", it);
-			for (int k = 0; k < CLUSTER_NUM; k++){
-				//	各次元ごとに
-				for (int p = 0; p < P; p++){
-					float total = 0.0;
-					for (int n = 0; n < N; n++){
-						total += h_ds[n].vi[k*P + p];
-					}
-					//	平均値で置き換えてみる
-					total /= N;
-					for (int n = 0; n < N; n++){
-						h_ds[n].vi[k*P + p] = total;
-					}
-				}
-			}
-		}
-
 
 		d_ds = h_ds;
 
@@ -487,7 +466,7 @@ __global__ void device_FCM(DataSet *ds){
 
 	// 収束していなければ温度を下げて繰り返す
 	//	cdをうまいことちょうせいする
-	float cd = (4.0-1.01)*i/N + 1.01;
+	float cd = (2.0-1.01)*i/N + 1.01;
 	ds[i].t_pos++; 
 	ds[i].t_change_num++;
 	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, cd);
