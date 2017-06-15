@@ -14,6 +14,7 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include <algorithm>
 #include <stdio.h>
 #include <time.h>
+#include <math.h>
 #include <vector>
 #include <string>
 #include <sstream>
@@ -37,7 +38,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 */
 
 //	IRISのデータを使う場合は#defineすること
-#define IRIS
+//#define IRIS
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 #define CASE break; case
@@ -47,7 +48,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 	#define DATA_NUM 150 /*データ数*/
 	#define P 4 /* 次元数 */
 #else
-	#define CLUSTER_NUM 2 /*クラスタ数*/
+	#define CLUSTER_NUM 3 /*クラスタ数*/
 	#define DATA_NUM 150 /*データ数*/
 	#define P 2 /* 次元数 */
 #endif
@@ -58,6 +59,8 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 
 #define EPSIRON 0.001 /* 許容エラー*/
 #define N 128  /* スレッド数*/
+
+#define CD 2.0
 
 
 
@@ -127,8 +130,8 @@ int main(){
 		h_ds[i].t_pos = 0;
 		h_ds[i].q = 2.0;
 		h_ds[i].clustering_num = 0;
-		h_ds[i].T[0] = pow(20000.0f, (i + 1.0f - N / 2.0f) / (N / 2.0f)); 
-		//h_ds[i].T[0] = 2.0;	//	2.0固定
+		h_ds[i].T[0] = pow(20.0, (i + 1.0f - N / 2.0f) / (N / 2.0f));
+		//h_ds[i].T[0] = 20.0;	//	2.0固定
 		h_ds[i].is_finished = FALSE;
 
 #ifdef IRIS
@@ -138,9 +141,17 @@ int main(){
 		}
 		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
 #else
-		make_datasets(h_ds[i].xk, P*DATA_NUM, 0.0, 1.0);
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 1.0);
-#endif
+		/*
+		make_datasets(h_ds[i].xk, P*DATA_NUM/3, 0.0, 0.33);
+		make_datasets(&h_ds[i].xk[P*DATA_NUM/3], P*DATA_NUM / 3, 0.33, 0.66);
+		make_datasets(&h_ds[i].xk[P*DATA_NUM*2/3], P*DATA_NUM/ 3, 0.66, 0.99);
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 100.0);
+		*/
+		make_datasets(h_ds[i].xk, P*DATA_NUM / 3, -300.0, -100.0);
+		make_datasets(&h_ds[i].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, -100.0, 100.0);
+		make_datasets(&h_ds[i].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 100.0, 300.0);
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -300.0, 300.0);
+		#endif
 	
 	}
 
@@ -162,31 +173,60 @@ int main(){
 			h_ds[n].error[h_ds[n].clustering_num-1] = compare(targets, h_ds[n].results, DATA_NUM);
 		}
 
+		//	ここで途中のviを出力する
+		for (int n = 0; n < N; n++){
+			sprintf(buf, "out/vi%d_%d.txt", n, it);
+			FILE *fp = fopen(buf, "w");
+			fprintf_xk(fp, h_ds[n].vi, CLUSTER_NUM, P);
+			fclose(fp);
+		}
+
+		/*
+			収束したものから順に解を交換する
+		*/
+		printf("############# Progress (%d/%d) ##################\n", it, 20);
+		int finished = 0;
+		for (int n = 0; n < N; n++){
+			if (h_ds[n].is_finished == TRUE) finished++;
+		}
+		printf("finished=%d\n", finished);
+
 	}
 	
 	printf("Clustering done.\n");
 	printf("Starting writing.\n");
 
-
 	/*
 		結果をファイルにダンプする
 	*/
-	const char HEAD[6][10] = { "uik", "results", "xk", "err", "objfunc", "soukan"};
+	const char HEAD[6][10] = { "uik", "results", "xk", "err", "vi", "soukan"};
 	for (int i = 0; i < 6; i++){
 		for (int n = 0; n < N; n++){
 			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
 			FILE *fp = fopen(buf, "w");
 			switch (i){
-			case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
+			//case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
 			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
 			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
 			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
 			//CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
+			CASE 4: fprintf_xk(fp, h_ds[n].vi, CLUSTER_NUM, P);
 			CASE 5: fprintf_pair_df(fp, h_ds[n].error, h_ds[n].obj_func, h_ds[n].clustering_num, ' ');
 			}
 			fclose(fp);
 		}
 	}
+
+	/*
+		繰り返し回数をダンプする
+	*/
+	FILE *fp2 = fopen("it.txt", "w");
+	for (int i = 0; i < N; i++){
+		fprintf(fp2, "%d\n", h_ds[i].clustering_num);
+	}
+	fclose(fp2);
+
+
 	
 
 
@@ -195,7 +235,8 @@ int main(){
 	*/
 	printf("--------------------The Clustering Result----------------------\n");
 	for (int j = 0; j < N; j++){
-		printf("[%d] T=", j);
+		//float cd = (4.0 - 1.01)*j / N + 1.01;
+		printf("[%d] it=%d T=", j,  h_ds[j].clustering_num);
 		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
 		int error = compare(targets, h_ds[j].results, DATA_NUM);
 		printf(" e=%d\n", error);
@@ -466,10 +507,10 @@ __global__ void device_FCM(DataSet *ds){
 
 	// 収束していなければ温度を下げて繰り返す
 	//	cdをうまいことちょうせいする
-	float cd = (2.0-1.01)*i/N + 1.01;
+	//float cd = (4.0-1.01)*i/N + 1.01;
 	ds[i].t_pos++; 
 	ds[i].t_change_num++;
-	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, cd);
+	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, CD);
 	ds[i].T[ds[i].t_pos] = t;
 
 	
