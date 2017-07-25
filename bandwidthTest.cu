@@ -38,7 +38,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 */
 
 //	IRISのデータを使う場合は#defineすること
-//#define IRIS
+#define IRIS
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 #define CASE break; case
@@ -61,7 +61,7 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 #define N 128  /* スレッド数*/
 
 #define CD 2.0
-
+#define Q 2.0
 
 
 typedef unsigned  int uint;
@@ -88,6 +88,7 @@ typedef struct{
 	int t_pos;		//	温度シナリオ参照位置
 	int t_change_num;	//	温度変更回数
 	int clustering_num;	//	クラスタリング回数
+	int exchanged;	//	交換済みか
 	BOOL is_finished; //クラスタリング終了条件を満たしたかどうか
 }DataSet;
 
@@ -128,11 +129,12 @@ int main(){
 	*/
 	for(int i=0; i<N; i++){
 		h_ds[i].t_pos = 0;
-		h_ds[i].q = 2.0;
+		h_ds[i].q = Q;
 		h_ds[i].clustering_num = 0;
 		h_ds[i].T[0] = pow(20.0, (i + 1.0f - N / 2.0f) / (N / 2.0f));
 		//h_ds[i].T[0] = 20.0;	//	2.0固定
 		h_ds[i].is_finished = FALSE;
+		h_ds[i].exchanged = FALSE;
 
 #ifdef IRIS
 		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
@@ -147,9 +149,14 @@ int main(){
 		make_datasets(&h_ds[i].xk[P*DATA_NUM*2/3], P*DATA_NUM/ 3, 0.66, 0.99);
 		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 100.0);
 		*/
-		make_datasets(h_ds[i].xk, P*DATA_NUM / 3, -300.0, -100.0);
-		make_datasets(&h_ds[i].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, -100.0, 100.0);
-		make_datasets(&h_ds[i].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 100.0, 300.0);
+		if (i == 0){
+			make_datasets(h_ds[i].xk, P*DATA_NUM / 3, -300.0, -100.0);
+			make_datasets(&h_ds[i].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, -100.0, 100.0);
+			make_datasets(&h_ds[i].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 100.0, 300.0);
+		}
+		else{
+			deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
+		}
 		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -300.0, 300.0);
 		#endif
 	
@@ -182,14 +189,50 @@ int main(){
 		}
 
 		/*
-			収束したものから順に解を交換する
+			途中のエントロピーを出力する
+		*/
+		FILE *fp3 = fopen("entropy.txt", "a");
+		for (int n = 0; n < N; n++){
+			float total = 0.0;
+			for (int k = 0; k < DATA_NUM; k++){
+				for (int i = 0; i < CLUSTER_NUM; i++){
+					//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
+					float uik = h_ds[n].uik[i*DATA_NUM + k];
+					total += pow(uik, Q) * (pow(uik, 1.0 - Q) - 1.0) / (1.0 - Q);
+				}
+			}
+			fprintf(fp3, "%.3f ", total);
+		}
+		fprintf(fp3, "\n");
+		fclose(fp3);
+	
+
+		/*
+			収束した数を表示
 		*/
 		printf("############# Progress (%d/%d) ##################\n", it, 20);
 		int finished = 0;
 		for (int n = 0; n < N; n++){
 			if (h_ds[n].is_finished == TRUE) finished++;
 		}
-		printf("finished=%d\n", finished);
+		printf("finished=%d/%d\n", finished, N);
+
+		/*
+			低温度から高温度へごっそりもってくる
+			一旦半分は交換してみるか
+		*/
+		/*
+		for (int n = 0; n < N/2; n++){
+			if (h_ds[n].is_finished == TRUE && h_ds[n].exchanged == FALSE){
+				h_ds[n].exchanged = TRUE;
+				h_ds[n + N / 2].is_finished = FALSE;
+				deepcopy(h_ds[n].vi, h_ds[n + N / 2].vi, P*CLUSTER_NUM);
+				printf("C ");
+			}
+		}
+		printf("\n");
+		*/
+
 
 	}
 	
@@ -205,7 +248,7 @@ int main(){
 			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
 			FILE *fp = fopen(buf, "w");
 			switch (i){
-			//case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
+			case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
 			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
 			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
 			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
@@ -226,6 +269,11 @@ int main(){
 	}
 	fclose(fp2);
 
+	fp2 = fopen("vi_list.txt", "w");
+	for (int i = 0; i < N; i++){
+		fprintf(fp2, "%d\n", h_ds[i].clustering_num);
+	}
+	fclose(fp2);
 
 	
 
