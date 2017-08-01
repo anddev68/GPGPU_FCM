@@ -193,6 +193,7 @@ int main(){
 		*/
 		FILE *fp3 = fopen("entropy.txt", "a");
 		for (int n = 0; n < N; n++){
+			if (n % 16 != 0) continue;
 			float total = 0.0;
 			for (int k = 0; k < DATA_NUM; k++){
 				for (int i = 0; i < CLUSTER_NUM; i++){

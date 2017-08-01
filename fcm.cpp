@@ -98,7 +98,6 @@ void make_iris_150_targes(int *targets){
 	for (int i = 100; i < 150; i++) targets[i] = 2;
 }
 
-
 int compare(int *target, int *sample, int size){
 	//	[0,1,2]の組み合わせの作成用配列と正解パターン
 	vector<int> pattern = vector<int>();
@@ -134,4 +133,10 @@ int compare(int *target, int *sample, int size){
 		sample[i] = good_pattern[sample[i]];
 	}
 	return min_error;
+}
+
+void deepcopy(float *src, float *dst, int size){
+	for (int i = 0; i < size; i++){
+		dst[i] = src[i];
+	}
 }

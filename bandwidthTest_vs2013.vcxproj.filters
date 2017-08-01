@@ -1,0 +1,33 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CudaCompile Include="bandwidthTest.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="PFCM.cpp" />
+    <ClCompile Include="fcm.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CpuGpuData.cuh" />
+    <ClInclude Include="Logger.h" />
+    <ClInclude Include="PFCM.h" />
+    <ClInclude Include="picjson.h" />
+    <ClInclude Include="fcm.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="doc">
+      <UniqueIdentifier>{54f0d5f5-ca27-4dc3-b77b-6e9044bebe2c}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="doc\readme.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="install_lib.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="README.md" />
+    <None Include="config.json" />
+  </ItemGroup>
+</Project>

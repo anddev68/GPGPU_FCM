@@ -1,0 +1,1 @@
+plot "uik.txt" with p

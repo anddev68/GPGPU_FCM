@@ -61,6 +61,10 @@ void fprintf_xk(FILE* fp, float *xk, int kSize, int pSize);
 */
 void fprintf_results(FILE *fp, int *results, int size);
 
+/*
+	コピー
+*/
+void deepcopy(float *src, float *dst, int size);
 
 
 
