@@ -17,6 +17,12 @@
 void make_datasets(float *xk, int size, float min=0.0, float max=1.0);
 
 /*
+	make_datasets()
+	xとyのレンジを指定してデータセットを作成します
+*/
+void make_datasets_xy(float *xk, int xsize, int ysize, float xmin, float xmax, float ymin, float ymax);
+
+/*
     make_sample_sets()
     1dの実験用データを作成する
 */
@@ -66,7 +72,10 @@ void fprintf_results(FILE *fp, int *results, int size);
 */
 void deepcopy(float *src, float *dst, int size);
 
-
+/*
+	データセットをロードする関数
+*/
+int load_dataset(char *filename, float *dst, int xsize, int ysize);
 
 
 

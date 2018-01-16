@@ -88,6 +88,21 @@ int make_iris_datasets(float *xk, int kSize, int pSize){
 	return 0;
 }
 
+int load_dataset(char *filename, float *dst, int xsize, int ysize){
+	FILE *fp = fopen(filename, "r");
+	if (fp == NULL) return -1;
+	for (int k = 0; k < ysize; k++){
+		for (int p = 0; p < xsize; p++){
+			float tmp;
+			fscanf(fp, "%f", &tmp);
+			dst[k * xsize + p] = tmp;
+		}
+	}
+	fclose(fp);
+	return 0;
+}
+
+
 void make_first_centroids(float *vi, int size, float min, float max){
     make_datasets(vi, size, min, max);
 }

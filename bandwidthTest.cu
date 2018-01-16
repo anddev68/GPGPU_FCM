@@ -1,7 +1,7 @@
 /*
-並列グラフ探索を利用したバージョン
-中央集権型 - プロセッサ間でノードのopen listを共有メモリ上に共有する
-http://d.hatena.ne.jp/hanecci/20110205/1296924411
+	並列グラフ探索を利用したバージョン
+	中央集権型 - プロセッサ間でノードのopen listを共有メモリ上に共有する
+	http://d.hatena.ne.jp/hanecci/20110205/1296924411
 */
 
 #include <cuda_runtime.h>
@@ -24,6 +24,7 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 #include "Timer.h"
 #include "CpuGpuData.cuh"
 #include <time.h>
+#include <direct.h>
 
 #include "FCM.h"
 #include "PFCM.h"
@@ -32,13 +33,13 @@ http://d.hatena.ne.jp/hanecci/20110205/1296924411
 
 /*
 ############################ Warning #####################
-GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
-適宜値を変えること
+GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。適宜値を変えること
 ########################################################
 */
 
 //	IRISのデータを使う場合は#defineすること
-#define IRIS
+//#define IRIS 1
+#define USE_FILE 1
 
 #define MAX3(a,b,c) ((a<b)? ((b<c)? c: b):  ((a<c)? c: a))
 #define CASE break; case
@@ -47,18 +48,23 @@ GPUプログラミングでは可変長配列を使いたくないため定数値を利用しています。
 	#define CLUSTER_NUM 3 /*クラスタ数*/
 	#define DATA_NUM 150 /*データ数*/
 	#define P 4 /* 次元数 */
+#elif USE_FILE 
+	#define CLUSTER_NUM 5 /*クラスタ数*/
+	#define DATA_NUM 200 /*データ数*/
+	#define DS_FILENAME "data/c5k200p2.txt" /* データセットファイルをしようする場合のファイル名 */
+	#define P 2 /* 次元数 */
 #else
 	#define CLUSTER_NUM 3 /*クラスタ数*/
 	#define DATA_NUM 150 /*データ数*/
 	#define P 2 /* 次元数 */
 #endif
 
-#define TEMP_SCENARIO_NUM 20 /*温度遷移シナリオの数*/
-#define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
-#define MAX_CLUSTERING_NUM 20 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
+//#define TEMP_SCENARIO_NUM 80 /*温度遷移シナリオの数*/
+//#define ERROR_SCENARIO_NUM 20 /*誤差遷移シナリオの数*/
+#define MAX_CLUSTERING_NUM 50 /* 最大繰り返し回数 -> 将来的にシナリオの数にしたい */
 
 #define EPSIRON 0.001 /* 許容エラー*/
-#define N 128  /* スレッド数*/
+#define N 256  /* スレッド数*/
 
 #define CD 2.0
 #define Q 2.0
@@ -80,9 +86,11 @@ typedef struct{
 	float vi[CLUSTER_NUM*P];
 	float vi_bak[CLUSTER_NUM*P];			//同一温度での前のvi
 	float Vi_bak[CLUSTER_NUM*P];			//異なる温度での前のvi
-	int error[ERROR_SCENARIO_NUM];	//	エラーシナリオ
+	int error[MAX_CLUSTERING_NUM];	//	エラーシナリオ
 	float obj_func[MAX_CLUSTERING_NUM]; // 目的関数のシナリオ
-	float T[TEMP_SCENARIO_NUM]; //	温度遷移のシナリオ
+	float vi_moving[MAX_CLUSTERING_NUM]; // viの移動量
+	float T[MAX_CLUSTERING_NUM]; //	温度遷移のシナリオ
+	float entropy[MAX_CLUSTERING_NUM];
 	int results[DATA_NUM];	//	実行結果
 	float q;		//	q値
 	int t_pos;		//	温度シナリオ参照位置
@@ -105,6 +113,34 @@ __device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, 
 __device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
 __device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize);
 
+void print_to_file(thrust::host_vector<DataSet>&);
+void print_entropy(thrust::host_vector<DataSet>&);
+
+void calc_current_entropy(DataSet*);
+void calc_current_jfcm(DataSet*); // gpu側で実装済みなんだけど，おかしいので，cpu側で実装
+void calc_current_vi_moving();
+
+void print_results(thrust::host_vector<DataSet>&);
+
+
+/*
+	連番フォルダを作る関数
+	arg0: 接頭
+	return: 成功した場合，連番，失敗した場合-1
+*/
+int make_seq_dir(char head[], int max=10000){
+	char textbuf[256];
+	for (int i = 0; i < max; i++){
+		sprintf(textbuf, "%s%d", head, i);
+		if (_mkdir(textbuf) == 0){
+			//	フォルダ作成成功
+			return i;
+		}
+	}
+	return -1;
+}
+
+
 int main(){
 	srand((unsigned)time(NULL));
 
@@ -123,182 +159,302 @@ int main(){
 	make_iris_150_targes(targets);
 	char buf[32];
 
-
 	/*
-		vectorの初期化
+		下準備
 	*/
-	for(int i=0; i<N; i++){
-		h_ds[i].t_pos = 0;
+	char textbuf[32];
+	int seq = make_seq_dir("vi");
+
+	//	==================================================================
+	//	 クラスタリング用データ配列を初期化する
+	//	==================================================================
+
+	for (int i = 0; i < N; i++){
+		h_ds[i].t_pos = h_ds[i].clustering_num = 0;
 		h_ds[i].q = Q;
-		h_ds[i].clustering_num = 0;
-		h_ds[i].T[0] = pow(20.0, (i + 1.0f - N / 2.0f) / (N / 2.0f));
-		//h_ds[i].T[0] = 20.0;	//	2.0固定
+		//h_ds[i].T[0] = pow(10000, (i + 1.0f - N / 2.0f) / (N / 2.0f));
+		h_ds[i].T[0] = pow(25, (i + 1.0f - N / 2.0f) / (N / 2.0f));
 		h_ds[i].is_finished = FALSE;
 		h_ds[i].exchanged = FALSE;
+	}
 
 #ifdef IRIS
-		if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
-			fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
-			exit(1);
-		}
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
-#else
-		/*
-		make_datasets(h_ds[i].xk, P*DATA_NUM/3, 0.0, 0.33);
-		make_datasets(&h_ds[i].xk[P*DATA_NUM/3], P*DATA_NUM / 3, 0.33, 0.66);
-		make_datasets(&h_ds[i].xk[P*DATA_NUM*2/3], P*DATA_NUM/ 3, 0.66, 0.99);
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 100.0);
-		*/
-		if (i == 0){
-			make_datasets(h_ds[i].xk, P*DATA_NUM / 3, -300.0, -100.0);
-			make_datasets(&h_ds[i].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, -100.0, 100.0);
-			make_datasets(&h_ds[i].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 100.0, 300.0);
-		}
-		else{
-			deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
-		}
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, -300.0, 300.0);
-		#endif
-	
+	if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
+		fprintf(stderr, "データセット数と次元数の設定が間違っています\n");
+		exit(1);
 	}
 
-	/*
-		クラスタリングを繰り返し行う
-		BFSバージョン
-	*/
-	for(int it=0; it<20; it++){
+	if (i == 0){
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
+	}
+	else{
+		deepcopy(h_ds[0].vi, h_ds[i].vi, P*CLUSTER_NUM);
+	}
+#elif USE_FILE
+	if (load_dataset(DS_FILENAME, h_ds[0].xk, P, DATA_NUM) == -1){
+		fprintf(stderr, "NO SUCH FILE\n");
+		exit(-1);
+	}
+	for (int i = 1; i < N; i++){
+		deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
+	}
+	for (int i = 0; i < N; i++){
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 10.0);
+	}
+#else
+	//	通常のファイルデータセット作成モードで生成
+	float MU =1.0;
+	make_datasets(h_ds[0].xk, P*DATA_NUM / 3, 0.0, 4.0*MU);
+	make_datasets(&h_ds[0].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, 3.0*MU, 7.0*MU);
+	make_datasets(&h_ds[0].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 6.0 *MU, 10.0*MU);
+	for (int i = 1; i < N; i++){
+		deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
+	}
+	for (int i = 0; i < N; i++){
+		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 10.0*MU);
+	}
 
+#endif
+
+
+
+	
+	//	==================================================================
+	//	クラスタリングを行う
+	//
+	//	==================================================================
+	for (int it = 0; it < MAX_CLUSTERING_NUM; it++){
+		printf("iterations=%d/%d\n", it, MAX_CLUSTERING_NUM);
+
+		for (int n = 0; n < N; n++){
+			//	エラー計算
+			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
+			//	エントロピー計算
+			calc_current_entropy(&h_ds[n]);
+			calc_current_jfcm(&h_ds[n]);
+
+			//	viを出力する
+			{
+				char textbuf[32];
+				sprintf(textbuf, "vi%d/Thigh=%.5f.txt", seq, h_ds[n].T[0]);
+				FILE *fp = fopen(textbuf, "a");
+				for (int k = 0; k < CLUSTER_NUM; k++){
+					for (int p = 0; p < P; p++){
+						fprintf(fp, "%.6f  ", h_ds[n].vi[k*P + p]);
+					}
+				}
+				fprintf(fp, "\n");
+				fclose(fp);
+			}
+		}
+
+
+		//	クラスタリング
 		d_ds = h_ds;
-
-		device_FCM << <1, N>> >(thrust::raw_pointer_cast(d_ds.data()));
+		device_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
 		cudaDeviceSynchronize();
-
 		h_ds = d_ds;
 
-		//	エラー計算
-		for (int n = 0; n < N; n++){
-			h_ds[n].error[h_ds[n].clustering_num-1] = compare(targets, h_ds[n].results, DATA_NUM);
-		}
+		//	変更前と変更後のviの移動量を計算
 
-		//	ここで途中のviを出力する
-		for (int n = 0; n < N; n++){
-			sprintf(buf, "out/vi%d_%d.txt", n, it);
-			FILE *fp = fopen(buf, "w");
-			fprintf_xk(fp, h_ds[n].vi, CLUSTER_NUM, P);
-			fclose(fp);
-		}
-
-		/*
-			途中のエントロピーを出力する
-		*/
-		FILE *fp3 = fopen("entropy.txt", "a");
-		for (int n = 0; n < N; n++){
-			if (n % 16 != 0) continue;
-			float total = 0.0;
-			for (int k = 0; k < DATA_NUM; k++){
-				for (int i = 0; i < CLUSTER_NUM; i++){
-					//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
-					float uik = h_ds[n].uik[i*DATA_NUM + k];
-					total += pow(uik, Q) * (pow(uik, 1.0 - Q) - 1.0) / (1.0 - Q);
-				}
-			}
-			fprintf(fp3, "%.3f ", total);
-		}
-		fprintf(fp3, "\n");
-		fclose(fp3);
-	
-
-		/*
-			収束した数を表示
-		*/
-		printf("############# Progress (%d/%d) ##################\n", it, 20);
-		int finished = 0;
-		for (int n = 0; n < N; n++){
-			if (h_ds[n].is_finished == TRUE) finished++;
-		}
-		printf("finished=%d/%d\n", finished, N);
-
-		/*
-			低温度から高温度へごっそりもってくる
-			一旦半分は交換してみるか
-		*/
-		/*
-		for (int n = 0; n < N/2; n++){
-			if (h_ds[n].is_finished == TRUE && h_ds[n].exchanged == FALSE){
-				h_ds[n].exchanged = TRUE;
-				h_ds[n + N / 2].is_finished = FALSE;
-				deepcopy(h_ds[n].vi, h_ds[n + N / 2].vi, P*CLUSTER_NUM);
-				printf("C ");
-			}
-		}
-		printf("\n");
-		*/
-
-
-	}
-	
-	printf("Clustering done.\n");
-	printf("Starting writing.\n");
-
-	/*
-		結果をファイルにダンプする
-	*/
-	const char HEAD[6][10] = { "uik", "results", "xk", "err", "vi", "soukan"};
-	for (int i = 0; i < 6; i++){
-		for (int n = 0; n < N; n++){
-			sprintf(buf, "out/%s%d.txt", HEAD[i], n);
-			FILE *fp = fopen(buf, "w");
-			switch (i){
-			case 0: fprintf_uik(fp, h_ds[n].uik, CLUSTER_NUM, DATA_NUM);
-			CASE 1: fprintf_results(fp, h_ds[n].results, DATA_NUM);
-			CASE 2: fprintf_xk(fp, h_ds[n].xk, DATA_NUM, P);
-			CASE 3: fprintf_error(fp, h_ds[n].error, h_ds[n].clustering_num);
-			//CASE 4: fprintf_objfunc(fp, h_ds[n].obj_func, h_ds[n].clustering_num);
-			CASE 4: fprintf_xk(fp, h_ds[n].vi, CLUSTER_NUM, P);
-			CASE 5: fprintf_pair_df(fp, h_ds[n].error, h_ds[n].obj_func, h_ds[n].clustering_num, ' ');
-			}
-			fclose(fp);
-		}
 	}
 
 	/*
-		繰り返し回数をダンプする
+		結果を出力する
 	*/
-	FILE *fp2 = fopen("it.txt", "w");
-	for (int i = 0; i < N; i++){
-		fprintf(fp2, "%d\n", h_ds[i].clustering_num);
-	}
-	fclose(fp2);
-
-	fp2 = fopen("vi_list.txt", "w");
-	for (int i = 0; i < N; i++){
-		fprintf(fp2, "%d\n", h_ds[i].clustering_num);
-	}
-	fclose(fp2);
-
-	
-
-
-	/*
-		クラスタリング結果を表示する
-	*/
-	printf("--------------------The Clustering Result----------------------\n");
-	for (int j = 0; j < N; j++){
-		//float cd = (4.0 - 1.01)*j / N + 1.01;
-		printf("[%d] it=%d T=", j,  h_ds[j].clustering_num);
-		for (int i = 0; i < TEMP_SCENARIO_NUM && h_ds[j].T[i]!=0.0; i++) printf("%1.2f ", h_ds[j].T[i]);
-		int error = compare(targets, h_ds[j].results, DATA_NUM);
-		printf(" e=%d\n", error);
-	}
-	
-
+	fprintf(stdout, "Clustering done.\n");
+	print_to_file(h_ds);
+	print_results(h_ds);
 
 	return 0;
 }
 
+/*
+	結果をファイルに書き出す関数
+	-----------------------------------------
+	初期温度, 繰り返し回数，誤り分類数, 目的関数の最大変化量, 目的関数の減少量 エントロピーの最大量 目的関数の最終値 エントロピーの最大値, 目的関数が最大となった回数n
+	0.54 12 24
+	0.88 12 21
+
+	初期温度 0.54 0.88
+	1回目entropy
+	2回目
+	------------------------------------------
+*/
+#define DIV 1
+void print_to_file(thrust::host_vector<DataSet> &ds){
+	FILE *fp = fopen("__dump.txt", "w");
+	for (int i = 0; i < N; i++){
+		int num = ds[i].clustering_num;
+		float max = 0.0;
+		float hmax = 0.0;
+		float total = 0.0;
+		int max_num = 0; // diffが最大化した回数 n回目
+		int max_change_num = 0; // diffが最大化した回数 温度更新回数
+		float max_temp = 0.0; // diffが最大化した温度
+		for (int j = 2; j < num; j++){
+			float diff = abs(ds[i].obj_func[j] - ds[i].obj_func[j - 1]);
+			float hdiff = abs(ds[i].entropy[j] - ds[i].entropy[j-1]);
+			if (diff > max){
+				max = diff;
+				max_num = j-1;
+				max_temp = ds[i].T[j-1];
+			}
+			//max = MAX(diff, max);
+			hmax = MAX(hdiff, hmax);
+			total += diff;
+		}
+		// 最初の値と最後の値の差分(減少量)を出力
+		float sub = ds[i].obj_func[1] - ds[i].obj_func[num - 1];
+		
+		//	何回目の同一温度をクラスタリングした回数かを出力する
+		float t_tmp = ds[i].T[0];
+		int clustering_num_same_tmp = 0;
+		for (int i = 1; i < num; i++){
+			if (t_tmp != ds[i].T[i]){
+				t_tmp = ds[i].T[i];
+				clustering_num_same_tmp = 0;
+			}
+			clustering_num_same_tmp++;
+		}
+		
+		fprintf(fp, "%.4f %d %d %.4f %.4f %.4f %.4f %.4f %d %.4f %d\n", 
+			ds[i].T[0], num, ds[i].error[num-1], max, sub, hmax, ds[i].obj_func[num-1], ds[i].entropy[num-1], max_num, max_temp, clustering_num_same_tmp);
+	}
+	fclose(fp);
+	
+	fp = fopen("__entropy.txt", "w");
+	for (int i = 0; i < N; i++){
+		if (i % DIV== 0){
+			fprintf(fp, "T=%.4f", ds[i].T[0]);
+			fprintf(fp, ",");
+		}
+	}
+	fprintf(fp, "\n");
+
+	for (int j = 0; j < MAX_CLUSTERING_NUM; j++){
+		for (int i = 0; i < N; i++){
+			if (i % DIV == 0){
+				if (ds[i].entropy[j] != 0)
+					fprintf(fp, "%.4f", ds[i].entropy[j]);
+				fprintf(fp, ",");
+			}
+		}
+		fprintf(fp, "\n");
+	}
+	fclose(fp);
+
+	fp = fopen("__jfcm.txt", "w");
+	for (int i = 0; i < N; i++){
+		if (i % DIV == 0){
+			fprintf(fp, "T=%.4f", ds[i].T[0]);
+			fprintf(fp, ",");
+		}
+	}
+	fprintf(fp, "\n");
+
+	for (int j = 0; j < MAX_CLUSTERING_NUM; j++){
+		for (int i = 0; i < N; i++){
+			if (i % DIV == 0){
+				if (ds[i].obj_func[j] != 0)
+					fprintf(fp, "%.4f", ds[i].obj_func[j]);
+				fprintf(fp, ",");
+			}
+		}
+		fprintf(fp, "\n");
+	}
+	fclose(fp);
+
+	//	xkを出力する
+	fp = fopen("__xk.txt", "w");
+	fprintf_xk(fp, ds[0].xk, DATA_NUM, P);
+	fclose(fp);
+
+	//	diffの変化を出力する
+	for (int i = 0; i < N; i++){
+		char buf[16];
+		sprintf(buf, "diff/%d.txt", i);
+		fp = fopen(buf, "w");
+		int num = ds[i].clustering_num;
+		float max = 0.0;
+		float total = 0.0;
+		for (int j = 1; j < num; j++){
+			//	jfcmが増えた量だけ出力
+			//float diff = abs(ds[i].obj_func[j - 1] - ds[i].obj_func[j]);
+			//max = MAX(diff, max);
+			float diff = abs(ds[i].obj_func[j] - ds[i].obj_func[j - 1]);
+			float t = ds[i].T[j - 1];
+			//fprintf(fp, "%d %.4f %.4f\n", i+1, t, diff);
+			fprintf(fp, "%.4f\n",  diff);
+		}
+		fclose(fp);
+	}
+}
+
+/*
+	結果をプロンプトに吐き出す関数
+*/
+void print_results(thrust::host_vector<DataSet> &ds){
+	for (int i = 0; i < N; i++){
+		//	帰属先を出力する
+		for (int k = 0; k < DATA_NUM; k++){
+			float max = 0.0;
+			int index = 0;
+			for (int j = 0; j < CLUSTER_NUM; j++){
+				if (ds[i].uik[j*DATA_NUM + k] > max){
+					max = ds[i].uik[j*DATA_NUM + k];
+					index = j;
+				}
+			}
+			printf("%d ", index);
+		}
+		printf("\n");
+	}
 
 
+}
 
+/*
+	エントロピーの計算
+*/
+void calc_current_entropy(DataSet *ds){
+		float ent = 0.0;
+		for (int k = 0; k < DATA_NUM; k++){
+			for (int i = 0; i < CLUSTER_NUM; i++){
+				//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
+				float uik = ds->uik[i*DATA_NUM + k];
+				ent += pow(uik, Q) * (pow(uik, 1.0 - Q) - 1.0) / (1.0 - Q);
+			}
+		}
+		/*
+		float org = 0.0;
+		for (int k = 0; k < DATA_NUM; k++){
+			for (int i = 0; i < CLUSTER_NUM; i++){
+				//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
+				float uik = ds->uik[i*DATA_NUM + k];
+				//org += pow(uik, Q) * h_ds[n].dik[i*CLUSTER_NUM+k];
+				org += pow(uik, Q) * ds->dik[i*DATA_NUM + k];
+			}
+		}
+		float T = ds->T[ds->t_pos];
+		ds->entropy[ds->clustering_num - 1] = org + T*ent;
+		*/
+		ds->entropy[ds->clustering_num - 1] = ent;
+}
+
+void calc_current_jfcm(DataSet *ds){
+	float org = 0.0;
+	for (int k = 0; k < DATA_NUM; k++){
+		for (int i = 0; i < CLUSTER_NUM; i++){
+			//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
+			float uik = ds->uik[i*DATA_NUM + k];
+			//org += pow(uik, Q) * h_ds[n].dik[i*CLUSTER_NUM+k];
+			org += pow(uik, Q) * ds->dik[i*DATA_NUM + k];
+		}
+	}
+	//float T = ds->T[ds->t_pos];
+	ds->obj_func[ds->clustering_num - 1] = org;
+}
 
 
 /*
@@ -505,8 +661,9 @@ __device__ void __device_copy_float(float *src, float *dst, int size){
 __global__ void device_FCM(DataSet *ds){
 	int i = threadIdx.x;
 	float err;
-	float t;
-	float jfcm;
+	float t = ds[i].T[ds[i].t_pos];
+	float q = ds[i].q;
+//	float jfcm;
 
 	//	クラスタリングしない
 	if (ds[i].is_finished){
@@ -515,7 +672,7 @@ __global__ void device_FCM(DataSet *ds){
 
 	//	uikを更新する
 	__device_update_dik(ds[i].dik, ds[i].vi, ds[i].xk, CLUSTER_NUM, DATA_NUM, P);
-	__device_update_uik_with_T(ds[i].uik, ds[i].dik, CLUSTER_NUM, DATA_NUM, ds[i].q, ds[i].T[ds[i].t_pos]);
+	__device_update_uik_with_T(ds[i].uik, ds[i].dik, CLUSTER_NUM, DATA_NUM, q, t);
 
 	//	分類結果を更新する
 	__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
@@ -528,6 +685,9 @@ __global__ void device_FCM(DataSet *ds){
 
 	//	クラスタリング回数を増やしておく
 	ds[i].clustering_num++;
+
+	//	目的関数を計算
+	//__device_jtsallis(ds[i].uik, ds[i].dik, &ds[i].obj_func[ds[i].clustering_num - 1], q, t, CLUSTER_NUM, DATA_NUM);
 
 	//	同一温度での収束を判定
 	//	収束していなければそのままの温度で繰り返す
