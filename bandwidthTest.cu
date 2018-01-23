@@ -21,14 +21,8 @@
 #include <list>
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
-#include "Timer.h"
-#include "CpuGpuData.cuh"
 #include <time.h>
 #include <direct.h>
-
-#include "FCM.h"
-#include "PFCM.h"
-#include "Logger.h"
 
 
 /*
@@ -47,11 +41,12 @@ GPUƒvƒƒOƒ‰ƒ~ƒ“ƒO‚Å‚Í‰Â•Ï’·”z—ñ‚ğg‚¢‚½‚­‚È‚¢‚½‚ß’è”’l‚ğ—˜—p‚µ‚Ä‚¢‚Ü‚·B“K‹X’l‚
 #ifdef IRIS
 	#define CLUSTER_NUM 3 /*ƒNƒ‰ƒXƒ^”*/
 	#define DATA_NUM 150 /*ƒf[ƒ^”*/
+	#define DS_FILENAME "data/iris_formatted.txt" /* ƒf[ƒ^ƒZƒbƒgƒtƒ@ƒCƒ‹‚ğ‚µ‚æ‚¤‚·‚éê‡‚Ìƒtƒ@ƒCƒ‹–¼ */
 	#define P 4 /* ŸŒ³” */
 #elif USE_FILE 
-	#define CLUSTER_NUM 5 /*ƒNƒ‰ƒXƒ^”*/
+	#define CLUSTER_NUM 4 /*ƒNƒ‰ƒXƒ^”*/
 	#define DATA_NUM 200 /*ƒf[ƒ^”*/
-	#define DS_FILENAME "data/c5k200p2.txt" /* ƒf[ƒ^ƒZƒbƒgƒtƒ@ƒCƒ‹‚ğ‚µ‚æ‚¤‚·‚éê‡‚Ìƒtƒ@ƒCƒ‹–¼ */
+	#define DS_FILENAME "data/c4k200p2.txt" /* ƒf[ƒ^ƒZƒbƒgƒtƒ@ƒCƒ‹‚ğ‚µ‚æ‚¤‚·‚éê‡‚Ìƒtƒ@ƒCƒ‹–¼ */
 	#define P 2 /* ŸŒ³” */
 #else
 	#define CLUSTER_NUM 3 /*ƒNƒ‰ƒXƒ^”*/
@@ -64,7 +59,7 @@ GPUƒvƒƒOƒ‰ƒ~ƒ“ƒO‚Å‚Í‰Â•Ï’·”z—ñ‚ğg‚¢‚½‚­‚È‚¢‚½‚ß’è”’l‚ğ—˜—p‚µ‚Ä‚¢‚Ü‚·B“K‹X’l‚
 #define MAX_CLUSTERING_NUM 50 /* Å‘åŒJ‚è•Ô‚µ‰ñ” -> «—ˆ“I‚ÉƒVƒiƒŠƒI‚Ì”‚É‚µ‚½‚¢ */
 
 #define EPSIRON 0.001 /* ‹–—eƒGƒ‰[*/
-#define N 256  /* ƒXƒŒƒbƒh”*/
+#define N 512  /* ƒXƒŒƒbƒh”*/
 
 #define CD 2.0
 #define Q 2.0
@@ -74,394 +69,115 @@ typedef unsigned  int uint;
 using namespace std;
 
 /*
-ƒfƒoƒCƒX‚É“n‚·‚½‚ß/ó‚¯æ‚é‚Ìƒf[ƒ^ƒZƒbƒg
-device_vector‚É“Ë‚Á‚Ş\‘¢‘Ì‚Ì’†‚Í‚Ç‚¤‚â‚ç’Êí‚Ì”z—ñ‚Å—Ç‚¢‚ç‚µ‚¢B
-‚»‚Ìˆ×A‰Â•Ï’·”z—ñ‚Íg—p‚Å‚«‚È‚¢‰Â”\«‚ª‚‚¢B
-FCM‚Å‚Ídik, uik...
+	UtilŒnƒƒ\ƒbƒh
 */
+
+void deepcopy(float *src, float *dst, int size){
+	for (int i = 0; i < size; i++){
+		dst[i] = src[i];
+	}
+}
+
+void swap(float *a, float *b){
+	float tmp = *a;
+	*a = *b;
+	*b = tmp;
+}
+
+void sort(float *src, int size){
+	for (int i = 0; i < size; i++){
+		for (int j = i + 1; j < size; j++){
+			if (src[i] > src[j]) {
+				swap(&src[i], &src[j]);
+			}
+		}
+	}
+}
+
+
+/*
+########################################################################
+WARNING
+6Í ƒnƒCƒuƒŠƒbƒhƒAƒj[ƒŠƒ“ƒO‚ÅÀ‘•‚µ‚Ü‚·
+
+–Ê“|‚È‚ñ‚Å‘S•”ƒOƒ[ƒoƒ‹•Ï”‚Å
+##########################################################################
+*/
+
 typedef struct{
-	float dik[DATA_NUM*CLUSTER_NUM];
+public:
+	float vi[CLUSTER_NUM*P];
+	float vi_bak[CLUSTER_NUM*P];
 	float uik[DATA_NUM*CLUSTER_NUM];
 	float xk[DATA_NUM*P];
-	float vi[CLUSTER_NUM*P];
-	float vi_bak[CLUSTER_NUM*P];			//“¯ˆê‰·“x‚Å‚Ì‘O‚Ìvi
-	float Vi_bak[CLUSTER_NUM*P];			//ˆÙ‚È‚é‰·“x‚Å‚Ì‘O‚Ìvi
-	int error[MAX_CLUSTERING_NUM];	//	ƒGƒ‰[ƒVƒiƒŠƒI
-	float obj_func[MAX_CLUSTERING_NUM]; // –Ú“IŠÖ”‚ÌƒVƒiƒŠƒI
-	float vi_moving[MAX_CLUSTERING_NUM]; // vi‚ÌˆÚ“®—Ê
-	float T[MAX_CLUSTERING_NUM]; //	‰·“x‘JˆÚ‚ÌƒVƒiƒŠƒI
-	float entropy[MAX_CLUSTERING_NUM];
-	int results[DATA_NUM];	//	ÀsŒ‹‰Ê
-	float q;		//	q’l
-	int t_pos;		//	‰·“xƒVƒiƒŠƒIQÆˆÊ’u
-	int t_change_num;	//	‰·“x•ÏX‰ñ”
-	int clustering_num;	//	ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‰ñ”
-	int exchanged;	//	ŒğŠ·Ï‚İ‚©
-	BOOL is_finished; //ƒNƒ‰ƒXƒ^ƒŠƒ“ƒOI—¹ğŒ‚ğ–‚½‚µ‚½‚©‚Ç‚¤‚©
-}DataSet;
+	float dik[DATA_NUM*CLUSTER_NUM];
+	float Thigh;
+	int iterations;
+	BOOL finished;
+}DataFormat;
 
-__global__ void device_FCM(DataSet *ds);
-__device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err);
-__device__ void __device_VFA(float *, float, int, float, float);
-__device__ void __device_update_vi(float *uik, float *xk, float *vi, float iSize, int kSize, int pSize, float m);
-__device__ void __device_update_uik(float *, float *, int, int, float);
-__device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T);
-__device__ void __device_distance(float *, float *, float *, int);
-__device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize);
-__device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize);
-__device__ void __device_jtsallis(float *uik, float *dik, float *jfcm, float q, float T, int iSize, int kSize);
-__device__ void __device_eval(float *uik, int *results, int iSize, int kSize);
-__device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize);
-
-void print_to_file(thrust::host_vector<DataSet>&);
-void print_entropy(thrust::host_vector<DataSet>&);
-
-void calc_current_entropy(DataSet*);
-void calc_current_jfcm(DataSet*); // gpu‘¤‚ÅÀ‘•Ï‚İ‚È‚ñ‚¾‚¯‚ÇC‚¨‚©‚µ‚¢‚Ì‚ÅCcpu‘¤‚ÅÀ‘•
-void calc_current_vi_moving();
-
-void print_results(thrust::host_vector<DataSet>&);
-
-
-/*
-	˜A”ÔƒtƒHƒ‹ƒ_‚ğì‚éŠÖ”
-	arg0: Ú“ª
-	return: ¬Œ÷‚µ‚½ê‡C˜A”ÔC¸”s‚µ‚½ê‡-1
-*/
-int make_seq_dir(char head[], int max=10000){
-	char textbuf[256];
-	for (int i = 0; i < max; i++){
-		sprintf(textbuf, "%s%d", head, i);
-		if (_mkdir(textbuf) == 0){
-			//	ƒtƒHƒ‹ƒ_ì¬¬Œ÷
-			return i;
-		}
-	}
-	return -1;
+void VFA(float *T, float Thigh, int k, float D, float Cd = 2.0){
+	*T = Thigh * exp(-Cd*pow((float)k - 1, 1.0f / D));
 }
 
-
-int main(){
-	srand((unsigned)time(NULL));
-
-	/*
-		ƒzƒXƒg‚ÆƒfƒoƒCƒX‚Ìƒf[ƒ^—Ìˆæ‚ğŠm•Û‚·‚é
-		DataSetIn, DataSetOut‚ªFCM‚É—p‚¢‚éƒf[ƒ^‚ÌW‡A\‘¢‘Ì‚È‚Ì‚ÅAqƒm[ƒh”•ªŠm•Û‚·‚ê‚Î‚æ‚¢
-		Šm•Û”1‚É‚·‚é‚Æ•À—ñ‰»‚ğs‚í‚¸A’ÊíVFA+FCM‚Ås‚¤
-	*/
-	thrust::device_vector<DataSet> d_ds(N);
-	thrust::host_vector<DataSet> h_ds(N);
-
-	/*
-		³Šm‚È•ª—Ş
-	*/
-	int targets[150];
-	make_iris_150_targes(targets);
-	char buf[32];
-
-	/*
-		‰º€”õ
-	*/
-	char textbuf[32];
-	int seq = make_seq_dir("vi");
-
-	//	==================================================================
-	//	 ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO—pƒf[ƒ^”z—ñ‚ğ‰Šú‰»‚·‚é
-	//	==================================================================
-
-	for (int i = 0; i < N; i++){
-		h_ds[i].t_pos = h_ds[i].clustering_num = 0;
-		h_ds[i].q = Q;
-		//h_ds[i].T[0] = pow(10000, (i + 1.0f - N / 2.0f) / (N / 2.0f));
-		h_ds[i].T[0] = pow(25, (i + 1.0f - N / 2.0f) / (N / 2.0f));
-		h_ds[i].is_finished = FALSE;
-		h_ds[i].exchanged = FALSE;
-	}
-
-#ifdef IRIS
-	if (make_iris_datasets(h_ds[i].xk, DATA_NUM, P) != 0){
-		fprintf(stderr, "ƒf[ƒ^ƒZƒbƒg”‚ÆŸŒ³”‚Ìİ’è‚ªŠÔˆá‚Á‚Ä‚¢‚Ü‚·\n");
-		exit(1);
-	}
-
-	if (i == 0){
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 5.0);
-	}
-	else{
-		deepcopy(h_ds[0].vi, h_ds[i].vi, P*CLUSTER_NUM);
-	}
-#elif USE_FILE
-	if (load_dataset(DS_FILENAME, h_ds[0].xk, P, DATA_NUM) == -1){
-		fprintf(stderr, "NO SUCH FILE\n");
-		exit(-1);
-	}
-	for (int i = 1; i < N; i++){
-		deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
-	}
-	for (int i = 0; i < N; i++){
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 10.0);
-	}
-#else
-	//	’Êí‚Ìƒtƒ@ƒCƒ‹ƒf[ƒ^ƒZƒbƒgì¬ƒ‚[ƒh‚Å¶¬
-	float MU =1.0;
-	make_datasets(h_ds[0].xk, P*DATA_NUM / 3, 0.0, 4.0*MU);
-	make_datasets(&h_ds[0].xk[P*DATA_NUM / 3], P*DATA_NUM / 3, 3.0*MU, 7.0*MU);
-	make_datasets(&h_ds[0].xk[P*DATA_NUM * 2 / 3], P*DATA_NUM / 3, 6.0 *MU, 10.0*MU);
-	for (int i = 1; i < N; i++){
-		deepcopy(h_ds[0].xk, h_ds[i].xk, P*DATA_NUM);
-	}
-	for (int i = 0; i < N; i++){
-		make_first_centroids(h_ds[i].vi, P*CLUSTER_NUM, 0.0, 10.0*MU);
-	}
-
-#endif
-
-
-
-	
-	//	==================================================================
-	//	ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚ğs‚¤
-	//
-	//	==================================================================
-	for (int it = 0; it < MAX_CLUSTERING_NUM; it++){
-		printf("iterations=%d/%d\n", it, MAX_CLUSTERING_NUM);
-
-		for (int n = 0; n < N; n++){
-			//	ƒGƒ‰[ŒvZ
-			h_ds[n].error[h_ds[n].clustering_num - 1] = compare(targets, h_ds[n].results, DATA_NUM);
-			//	ƒGƒ“ƒgƒƒs[ŒvZ
-			calc_current_entropy(&h_ds[n]);
-			calc_current_jfcm(&h_ds[n]);
-
-			//	vi‚ğo—Í‚·‚é
-			{
-				char textbuf[32];
-				sprintf(textbuf, "vi%d/Thigh=%.5f.txt", seq, h_ds[n].T[0]);
-				FILE *fp = fopen(textbuf, "a");
-				for (int k = 0; k < CLUSTER_NUM; k++){
-					for (int p = 0; p < P; p++){
-						fprintf(fp, "%.6f  ", h_ds[n].vi[k*P + p]);
-					}
-				}
-				fprintf(fp, "\n");
-				fclose(fp);
+void update_vi(float *uik, float *xk, float *vi, int iSize, int kSize, int pSize, float m){
+	for (int i = 0; i < iSize; i++){
+		//	“Æ—§‚µ‚Ä‚¢‚é‚½‚ßA•ª•ê‚É—˜—p‚·‚é‡Œv’l‚ğo‚µ‚Ä‚¨‚­
+		float sum_down = 0;
+		for (int k = 0; k < kSize; k++){
+			sum_down += pow(uik[i*kSize + k], m);
+		}
+		//	•ªq‚ğŒvZ‚·‚é	
+		for (int p = 0; p < pSize; p++){
+			float sum_up = 0;
+			for (int k = 0; k < kSize; k++){
+				sum_up += pow(uik[i*kSize + k], m) * xk[k*pSize + p];
 			}
+			vi[i*pSize + p] = sum_up / sum_down;
 		}
-
-
-		//	ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO
-		d_ds = h_ds;
-		device_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
-		cudaDeviceSynchronize();
-		h_ds = d_ds;
-
-		//	•ÏX‘O‚Æ•ÏXŒã‚Ìvi‚ÌˆÚ“®—Ê‚ğŒvZ
-
-	}
-
-	/*
-		Œ‹‰Ê‚ğo—Í‚·‚é
-	*/
-	fprintf(stdout, "Clustering done.\n");
-	print_to_file(h_ds);
-	print_results(h_ds);
-
-	return 0;
-}
-
-/*
-	Œ‹‰Ê‚ğƒtƒ@ƒCƒ‹‚É‘‚«o‚·ŠÖ”
-	-----------------------------------------
-	‰Šú‰·“x, ŒJ‚è•Ô‚µ‰ñ”CŒë‚è•ª—Ş”, –Ú“IŠÖ”‚ÌÅ‘å•Ï‰»—Ê, –Ú“IŠÖ”‚ÌŒ¸­—Ê ƒGƒ“ƒgƒƒs[‚ÌÅ‘å—Ê –Ú“IŠÖ”‚ÌÅI’l ƒGƒ“ƒgƒƒs[‚ÌÅ‘å’l, –Ú“IŠÖ”‚ªÅ‘å‚Æ‚È‚Á‚½‰ñ”n
-	0.54 12 24
-	0.88 12 21
-
-	‰Šú‰·“x 0.54 0.88
-	1‰ñ–Úentropy
-	2‰ñ–Ú
-	------------------------------------------
-*/
-#define DIV 1
-void print_to_file(thrust::host_vector<DataSet> &ds){
-	FILE *fp = fopen("__dump.txt", "w");
-	for (int i = 0; i < N; i++){
-		int num = ds[i].clustering_num;
-		float max = 0.0;
-		float hmax = 0.0;
-		float total = 0.0;
-		int max_num = 0; // diff‚ªÅ‘å‰»‚µ‚½‰ñ” n‰ñ–Ú
-		int max_change_num = 0; // diff‚ªÅ‘å‰»‚µ‚½‰ñ” ‰·“xXV‰ñ”
-		float max_temp = 0.0; // diff‚ªÅ‘å‰»‚µ‚½‰·“x
-		for (int j = 2; j < num; j++){
-			float diff = abs(ds[i].obj_func[j] - ds[i].obj_func[j - 1]);
-			float hdiff = abs(ds[i].entropy[j] - ds[i].entropy[j-1]);
-			if (diff > max){
-				max = diff;
-				max_num = j-1;
-				max_temp = ds[i].T[j-1];
-			}
-			//max = MAX(diff, max);
-			hmax = MAX(hdiff, hmax);
-			total += diff;
-		}
-		// Å‰‚Ì’l‚ÆÅŒã‚Ì’l‚Ì·•ª(Œ¸­—Ê)‚ğo—Í
-		float sub = ds[i].obj_func[1] - ds[i].obj_func[num - 1];
-		
-		//	‰½‰ñ–Ú‚Ì“¯ˆê‰·“x‚ğƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚µ‚½‰ñ”‚©‚ğo—Í‚·‚é
-		float t_tmp = ds[i].T[0];
-		int clustering_num_same_tmp = 0;
-		for (int i = 1; i < num; i++){
-			if (t_tmp != ds[i].T[i]){
-				t_tmp = ds[i].T[i];
-				clustering_num_same_tmp = 0;
-			}
-			clustering_num_same_tmp++;
-		}
-		
-		fprintf(fp, "%.4f %d %d %.4f %.4f %.4f %.4f %.4f %d %.4f %d\n", 
-			ds[i].T[0], num, ds[i].error[num-1], max, sub, hmax, ds[i].obj_func[num-1], ds[i].entropy[num-1], max_num, max_temp, clustering_num_same_tmp);
-	}
-	fclose(fp);
-	
-	fp = fopen("__entropy.txt", "w");
-	for (int i = 0; i < N; i++){
-		if (i % DIV== 0){
-			fprintf(fp, "T=%.4f", ds[i].T[0]);
-			fprintf(fp, ",");
-		}
-	}
-	fprintf(fp, "\n");
-
-	for (int j = 0; j < MAX_CLUSTERING_NUM; j++){
-		for (int i = 0; i < N; i++){
-			if (i % DIV == 0){
-				if (ds[i].entropy[j] != 0)
-					fprintf(fp, "%.4f", ds[i].entropy[j]);
-				fprintf(fp, ",");
-			}
-		}
-		fprintf(fp, "\n");
-	}
-	fclose(fp);
-
-	fp = fopen("__jfcm.txt", "w");
-	for (int i = 0; i < N; i++){
-		if (i % DIV == 0){
-			fprintf(fp, "T=%.4f", ds[i].T[0]);
-			fprintf(fp, ",");
-		}
-	}
-	fprintf(fp, "\n");
-
-	for (int j = 0; j < MAX_CLUSTERING_NUM; j++){
-		for (int i = 0; i < N; i++){
-			if (i % DIV == 0){
-				if (ds[i].obj_func[j] != 0)
-					fprintf(fp, "%.4f", ds[i].obj_func[j]);
-				fprintf(fp, ",");
-			}
-		}
-		fprintf(fp, "\n");
-	}
-	fclose(fp);
-
-	//	xk‚ğo—Í‚·‚é
-	fp = fopen("__xk.txt", "w");
-	fprintf_xk(fp, ds[0].xk, DATA_NUM, P);
-	fclose(fp);
-
-	//	diff‚Ì•Ï‰»‚ğo—Í‚·‚é
-	for (int i = 0; i < N; i++){
-		char buf[16];
-		sprintf(buf, "diff/%d.txt", i);
-		fp = fopen(buf, "w");
-		int num = ds[i].clustering_num;
-		float max = 0.0;
-		float total = 0.0;
-		for (int j = 1; j < num; j++){
-			//	jfcm‚ª‘‚¦‚½—Ê‚¾‚¯o—Í
-			//float diff = abs(ds[i].obj_func[j - 1] - ds[i].obj_func[j]);
-			//max = MAX(diff, max);
-			float diff = abs(ds[i].obj_func[j] - ds[i].obj_func[j - 1]);
-			float t = ds[i].T[j - 1];
-			//fprintf(fp, "%d %.4f %.4f\n", i+1, t, diff);
-			fprintf(fp, "%.4f\n",  diff);
-		}
-		fclose(fp);
 	}
 }
 
-/*
-	Œ‹‰Ê‚ğƒvƒƒ“ƒvƒg‚É“f‚«o‚·ŠÖ”
-*/
-void print_results(thrust::host_vector<DataSet> &ds){
-	for (int i = 0; i < N; i++){
-		//	‹A‘®æ‚ğo—Í‚·‚é
-		for (int k = 0; k < DATA_NUM; k++){
-			float max = 0.0;
-			int index = 0;
-			for (int j = 0; j < CLUSTER_NUM; j++){
-				if (ds[i].uik[j*DATA_NUM + k] > max){
-					max = ds[i].uik[j*DATA_NUM + k];
-					index = j;
-				}
+void update_uik(float *uik, float *dik, int iSize, int kSize, float m){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m - 1.0)));
 			}
-			printf("%d ", index);
-		}
-		printf("\n");
-	}
-
-
-}
-
-/*
-	ƒGƒ“ƒgƒƒs[‚ÌŒvZ
-*/
-void calc_current_entropy(DataSet *ds){
-		float ent = 0.0;
-		for (int k = 0; k < DATA_NUM; k++){
-			for (int i = 0; i < CLUSTER_NUM; i++){
-				//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
-				float uik = ds->uik[i*DATA_NUM + k];
-				ent += pow(uik, Q) * (pow(uik, 1.0 - Q) - 1.0) / (1.0 - Q);
-			}
-		}
-		/*
-		float org = 0.0;
-		for (int k = 0; k < DATA_NUM; k++){
-			for (int i = 0; i < CLUSTER_NUM; i++){
-				//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
-				float uik = ds->uik[i*DATA_NUM + k];
-				//org += pow(uik, Q) * h_ds[n].dik[i*CLUSTER_NUM+k];
-				org += pow(uik, Q) * ds->dik[i*DATA_NUM + k];
-			}
-		}
-		float T = ds->T[ds->t_pos];
-		ds->entropy[ds->clustering_num - 1] = org + T*ent;
-		*/
-		ds->entropy[ds->clustering_num - 1] = ent;
-}
-
-void calc_current_jfcm(DataSet *ds){
-	float org = 0.0;
-	for (int k = 0; k < DATA_NUM; k++){
-		for (int i = 0; i < CLUSTER_NUM; i++){
-			//fprintf(stdout, "%.3f  ", h_ds[0].uik[i*DATA_NUM+k]);
-			float uik = ds->uik[i*DATA_NUM + k];
-			//org += pow(uik, Q) * h_ds[n].dik[i*CLUSTER_NUM+k];
-			org += pow(uik, Q) * ds->dik[i*DATA_NUM + k];
+			uik[i*kSize + k] = 1.0 / sum;
 		}
 	}
-	//float T = ds->T[ds->t_pos];
-	ds->obj_func[ds->clustering_num - 1] = org;
 }
 
+void update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
+			}
+			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
+			uik[i*kSize + k] = up / sum;
+		}
+	}
+}
 
-/*
-FCMû‘©”»’èŠÖ”
-GPU‚ÅVi‚Ìû‘©”»’è‚ğs‚¤
-*/
-__device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err){
+void update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0.0;
+			for (int p = 0; p < pSize; p++){
+				sum += pow(float(xk[k*pSize + p] - vi[i*pSize + p]), 2.0f);
+			}
+			//	dik->setValue(k, i, sqrt(sum));
+			//dik[k*iSize + i] = sum;
+			dik[i*kSize + k] = sum;
+		}
+	}
+}
+
+void calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err){
 	float max_error = 0;
 	for (int i = 0; i < iSize; i++){
 		float sum = 0.0;				//	ƒNƒ‰ƒXƒ^’†S‚ÌˆÚ“®—Ê‚ğŒvZ‚·‚é
@@ -473,18 +189,136 @@ __device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, i
 	*err = max_error;
 }
 
-/*
-FCM—â‹pŠÖ”
-VFA‚Å‰·“x‚ğ‰º‚°‚é
-*/
-__device__ void __device_VFA(float *T, float Thigh, int k, float D, float Cd = 2.0){
-	*T = Thigh * exp(-Cd*pow((float)k - 1, 1.0f / D));
+void print_results(float *uik){
+		//	‹A‘®æ‚ğo—Í‚·‚é
+		for (int k = 0; k < DATA_NUM; k++){
+			float max = 0.0;
+			int index = 0;
+			for (int j = 0; j < CLUSTER_NUM; j++){
+				if (uik[j*DATA_NUM + k] > max){
+					max = uik[j*DATA_NUM + k];
+					index = j;
+				}
+			}
+			printf("%d ", index);
+		}
+		printf("\n");
 }
 
-/*
-FCM
-ƒNƒ‰ƒXƒ^’†S‚ğXV
-*/
+void print_vi(FILE *fp, float *vi){
+	for (int i = 0; i < CLUSTER_NUM; i++){
+		for (int p = 0; p < P; p++){
+			fprintf(fp, "%.2f  ", vi[i*P+p]);
+		}
+	}
+	fprintf(fp, "\n");
+}
+
+int load_dataset(char *filename, float *dst, int xsize, int ysize){
+	FILE *fp = fopen(filename, "r");
+	if (fp == NULL) return -1;
+	for (int k = 0; k < ysize; k++){
+		for (int p = 0; p < xsize; p++){
+			float tmp;
+			fscanf(fp, "%f", &tmp);
+			dst[k * xsize + p] = tmp;
+		}
+	}
+	fclose(fp);
+	return 0;
+}
+
+float __random(float min, float max){
+	return min + (float)(rand() * (max - min) / RAND_MAX);
+}
+
+void make_random(float *xk, int size, float min, float max){
+	for (int i = 0; i<size; i++){
+		xk[i] = __random(min, max);
+	}
+}
+
+float calc_L1k(float *xk, float *vi, int iSize, int kSize, int pSize){
+	float sum = 0.0;
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float tmp = 0.0;
+			for (int p = 0; p < pSize; p++){
+				tmp += pow(float(xk[k*pSize + p] - vi[i*pSize + p]), 2.0f);
+			}
+			sum += sqrt(tmp);
+			//sum += tmp;
+		}
+	}
+	return sum / kSize;
+}
+
+void sort2(float *src){
+	if (src[0] > src[2]){
+		float tmp = src[0];
+		float tmp2 = src[1];
+		src[0] = src[2];
+		src[1] = src[3];
+		src[2] = tmp;
+		src[3] = tmp2;
+	}
+}
+
+void sort3(float *src){
+	if (src[0] > src[3]){
+		float tmp = src[0];
+		float tmp2 = src[1];
+		float tmp3 = src[2];
+		src[0] = src[0+3];
+		src[1] = src[1+3];
+		src[2] = src[2+3];
+		src[0+3] = tmp;
+		src[1+3] = tmp2;
+		src[2 + 3] = tmp3;
+	}
+}
+
+
+
+__device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0.0;
+			for (int p = 0; p < pSize; p++){
+				sum += pow(float(xk[k*pSize + p] - vi[i*pSize + p]), 2.0f);
+			}
+			//	dik->setValue(k, i, sqrt(sum));
+			//dik[k*iSize + i] = sum;
+			dik[i*kSize + k] = sum;
+		}
+	}
+}
+
+__device__ void __device_update_uik(float *uik, float *dik, int iSize, int kSize, float m){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m - 1.0)));
+			}
+			uik[i*kSize + k] = 1.0 / sum;
+		}
+	}
+}
+
+__device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T){
+	for (int i = 0; i < iSize; i++){
+		for (int k = 0; k < kSize; k++){
+			float sum = 0;
+			for (int j = 0; j < iSize; j++){
+				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
+			}
+			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
+			uik[i*kSize + k] = up / sum;
+		}
+	}
+}
+
 __device__  void __device_update_vi(float *uik, float *xk, float *vi, int iSize, int kSize, int pSize, float m){
 	for (int i = 0; i < iSize; i++){
 		//	“Æ—§‚µ‚Ä‚¢‚é‚½‚ßA•ª•ê‚É—˜—p‚·‚é‡Œv’l‚ğo‚µ‚Ä‚¨‚­
@@ -503,316 +337,202 @@ __device__  void __device_update_vi(float *uik, float *xk, float *vi, int iSize,
 	}
 }
 
-/*
-FCM
-uik‚ğXV‚·‚é
-*/
-__device__ void __device_update_uik(float *uik, float *dik, int iSize, int kSize, float m){
+__device__ void __device_VFA(float *T, float Thigh, int k, float D, float Cd = 2.0){
+	*T = Thigh * exp(-Cd*pow((float)k - 1, 1.0f / D));
+}
+
+__device__ void __device_calc_convergence(float *vi, float *vi_bak, int iSize, int pSize, float *err){
+	float max_error = 0;
 	for (int i = 0; i < iSize; i++){
-		for (int k = 0; k < kSize; k++){
-			float sum = 0;
-			for (int j = 0; j < iSize; j++){
-				sum += pow((float)(dik[i*kSize + k] / dik[j*kSize + k]), float(1.0 / (m- 1.0)));
-			}
-			uik[i*kSize + k] = 1.0 / sum;
+		float sum = 0.0;				//	ƒNƒ‰ƒXƒ^’†S‚ÌˆÚ“®—Ê‚ğŒvZ‚·‚é
+		for (int p = 0; p < pSize; p++){
+			sum += pow(vi[i*pSize + p] - vi_bak[i*pSize + p], 2.0f);
 		}
+		max_error = MAX(max_error, sum);	//	Å‚à‘å‚«‚¢ˆÚ“®—Ê‚ğ”»’fŠî€‚É‚·‚é
 	}
+	*err = max_error;
 }
 
-/*
-ƒAƒj[ƒŠƒ“ƒO‚Åuik‚ğXV‚·‚é
-*/
-__device__ void __device_update_uik_with_T(float *uik, float *dik, int iSize, int kSize, float q, float T){
-	for (int i = 0; i < iSize; i++){
-		for (int k = 0; k < kSize; k++){
-			float sum = 0;
-			for (int j = 0; j < iSize; j++){
-				sum += pow((1.0f - (1.0f / T)*(1.0f - q)*dik[j*kSize + k]), 1.0f / (1.0f - q));
-			}
-			float up = pow((1.0f - (1.0f / T)*(1.0f - q)*dik[i*kSize + k]), 1.0f / (1.0f - q));
-			uik[i*kSize + k] = up / sum;
-		}
-	}
-}
-
-/*
-eval
-*/
-__device__ void __device_eval(float *uik, int *results, int iSize, int kSize){
-	for (int k = 0; k < kSize; k++){
-		results[k] = 0;
-		float maxValue = uik[0*kSize + k];
-		for (int i = 1; i < iSize; i++){
-			if (maxValue < uik[i*kSize + k]){
-				maxValue = uik[i*kSize + k];
-				results[k] = i;
-			}
-		}
-	}
-
-}
-
-/*
-	³‚µ‚¢IRIS‚Ìƒf[ƒ^‚Æ”äŠr‚µ‚Ä‚¢‚­‚ÂŠÔˆá‚Á‚Ä‚¢‚é‚©æ“¾‚·‚é
-	50x3‚Æ‚·‚é
-	b’è“I‚Èˆ’u‚Å‚·
-*/
-__device__ void __device_iris_error(float *uik, int *error, int iSize, int kSize){
-	int sum[] = { 0, 0, 0 };
-	int err = 0;
-	
-	for (int k = 0; k < kSize; k++){
-		float maxValue = uik[0*kSize +k];
-		int maxIndex = 0;
-		for (int i = 1; i < iSize; i++){
-			//	Å‚à‘å‚«‚¢index‚ğæ“¾
-			float value = uik[i*kSize + k];
-			if (maxValue < value){
-				value = maxValue;
-				maxIndex = i;
-			}
-		}
-		//	‘å‚«‚¢index‚É‡Œv’l‚ğ‘«‚·
-		sum[maxIndex] ++;
-		
-		//	50ŒÂ‚É‚È‚Á‚½‚çƒGƒ‰[‚ğŒvZ‚·‚é
-		if (k == 49 || k == 99 || k == 149){
-			err += 50 - MAX3(sum[0], sum[1], sum[2]);
-			for (int m = 0; m <  3; m++) sum[m] = 0;
-		}	
-		
-	}
-	*error = err;
-
-}
-
-
-/*
-–Ú“IŠÖ”JFCM‚ğ’è‹`‚µ‚Ä‚¨‚­
-Å“K‰ğ‚Ì”»’f‚É—˜—p‚·‚é
-*/
-__device__ void __device_jfcm(float *uik, float *dik, float *jfcm, float m, int iSize, int kSize){
-	float total = 0.0;
-	for (int i = 0; i < iSize; i++){
-		for (int k = 0; k < kSize; k++){
-			total += pow(uik[i*kSize + k], 1.0f) * dik[i*kSize + k];
-		}
-	}
-	*jfcm = total;
-}
-
-__device__ void __device_jtsallis(float *uik, float *dik, float *j, float q, float T, int iSize, int kSize){
-	float total = 0.0;
-	for (int i = 0; i < iSize; i++){
-		for (int k = 0; k < kSize; k++){
-			float ln_q = (pow(uik[i*kSize + k], 1.0f - q) - 1.0f) / (1.0f - q);
-			total += pow(uik[i*kSize + k], q) * dik[i*kSize + k] + T * pow(uik[i*kSize + k], q) *ln_q;
-		}
-	}
-	*j = total;
-}
-
-/*
-FCM
-dik‚ğXV‚·‚é
-*/
-__device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize){
-	for (int i = 0; i < iSize; i++){
-		for (int k = 0; k < kSize; k++){
-			float sum = 0.0;
-			for (int p = 0; p < pSize; p++){
-				sum += pow(float(xk[k*pSize + p] - vi[i*pSize + p]), 2.0f);
-			}
-			//	dik->setValue(k, i, sqrt(sum));
-			//dik[k*iSize + i] = sum;
-			dik[i*kSize + k] = sum;
-		}
-	}
-}
-
-
-/*
-FCM
-‹——£‚ğ‘ª‚é
-*/
-__device__ void __device_distance(float* d, float *v1, float *v2, int pSize){
-	int p;
-	double total = 0.0;
-	for (p = 0; p < pSize; p++){
-		/* v1[p] * v2[p] */
-		/* 1ŸŒ³”z—ñ‚ÅŠm•Û‚³‚ê‚Ä‚¢‚éê‡‚É”õ‚¦‚Ä‚ ‚¦‚Ä‚±‚¤‚µ‚Ä‚¢‚Ü‚· */
-		total += pow(*(v1 + p) - *(v2 + p), 2);
-	}
-	*d = total;
-}
-
-/*
-array‚ğƒRƒs[‚·‚é
-*/
-__device__ void __device_copy_float(float *src, float *dst, int size){
+__device__ void __device_deepcopy(float *src, float *dst, int size){
 	for (int i = 0; i < size; i++){
 		dst[i] = src[i];
 	}
 }
 
-/*
-	FCM
-*/
-__global__ void device_FCM(DataSet *ds){
+__global__ void device_pre_FCM(DataFormat*dss){
 	int i = threadIdx.x;
+	DataFormat *ds = &dss[i];
+
+	//	û‘©‚µ‚Ä‚½‚çƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚µ‚È‚¢
+	if (ds->finished == TRUE)
+		return;
+
+	//	vi‚ÌƒoƒbƒNƒAƒbƒv
+	__device_deepcopy(ds->vi, ds->vi_bak, CLUSTER_NUM*P);
+
+	float T = ds->Thigh;
+	ds->iterations++;
+	//__device_VFA(&T, ds->Thigh, ds->iterations, P);
+	__device_update_dik(ds->dik, ds->vi, ds->xk, CLUSTER_NUM, DATA_NUM, P);
+	__device_update_uik_with_T(ds->uik, ds->dik, CLUSTER_NUM, DATA_NUM, Q, T);
+	__device_update_vi(ds->uik, ds->xk, ds->vi, CLUSTER_NUM, DATA_NUM, P, Q);
+
+	//	û‘©”»’è
 	float err;
-	float t = ds[i].T[ds[i].t_pos];
-	float q = ds[i].q;
-//	float jfcm;
+	__device_calc_convergence(ds->vi, ds->vi_bak, CLUSTER_NUM, P, &err);
+	if (err < EPSIRON)
+		ds->finished = TRUE;
+}
 
-	//	ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚µ‚È‚¢
-	if (ds[i].is_finished){
-		return;
+int main(){
+	srand((unsigned)time(NULL));
+	for (int i = 0; i < 100; i++) rand();
+
+	/* ” ‚ğ—pˆÓ‚·‚é */
+	float _Vi_bak[CLUSTER_NUM*P];
+	float _vi_bak[CLUSTER_NUM*P];
+	float _vi[CLUSTER_NUM*P];
+	float _uik[DATA_NUM*CLUSTER_NUM];
+	float _xk[DATA_NUM*P];
+	float _dik[DATA_NUM*CLUSTER_NUM];
+	thrust::device_vector<DataFormat> d_ds(N);
+	thrust::host_vector<DataFormat> h_ds(N);
+
+	/* ƒf[ƒ^ƒ[ƒh */
+	if (load_dataset(DS_FILENAME, _xk, P,  DATA_NUM) != 0){
+		fprintf(stderr, "LOAD FAILED.");
+		exit(1);
 	}
 
-	//	uik‚ğXV‚·‚é
-	__device_update_dik(ds[i].dik, ds[i].vi, ds[i].xk, CLUSTER_NUM, DATA_NUM, P);
-	__device_update_uik_with_T(ds[i].uik, ds[i].dik, CLUSTER_NUM, DATA_NUM, q, t);
+	/* Thigh‚ÌŠî€’lŒˆ’è */
+	/* æ¶‚Ì•û–@‚É‚æ‚èThigh‚ğ‹‚ß‚é */
+	float tmp = 0.0;
+	for (int i = 0; i < 1000; i++){
+		make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
+		float L1k_bar = calc_L1k(_xk, _vi, CLUSTER_NUM, DATA_NUM, P);
+		tmp += CLUSTER_NUM / L1k_bar;
+	}
+	tmp = 1000 / tmp;
+	printf("Thigh=%f\n", tmp);
 
-	//	•ª—ŞŒ‹‰Ê‚ğXV‚·‚é
-	__device_eval(ds[i].uik, ds[i].results, CLUSTER_NUM, DATA_NUM);
 
-	//	vi‚ÌƒoƒbƒNƒAƒbƒv‚ğæ‚é
-	__device_copy_float(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM*P);
-
-	//	vi(centroids)‚ğXV‚·‚é
-	__device_update_vi(ds[i].uik, ds[i].xk, ds[i].vi, CLUSTER_NUM, DATA_NUM, P, ds[i].q);
-
-	//	ƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‰ñ”‚ğ‘‚â‚µ‚Ä‚¨‚­
-	ds[i].clustering_num++;
-
-	//	–Ú“IŠÖ”‚ğŒvZ
-	//__device_jtsallis(ds[i].uik, ds[i].dik, &ds[i].obj_func[ds[i].clustering_num - 1], q, t, CLUSTER_NUM, DATA_NUM);
-
-	//	“¯ˆê‰·“x‚Å‚Ìû‘©‚ğ”»’è
-	//	û‘©‚µ‚Ä‚¢‚È‚¯‚ê‚Î‚»‚Ì‚Ü‚Ü‚Ì‰·“x‚ÅŒJ‚è•Ô‚·
-	__device_calc_convergence(ds[i].vi, ds[i].vi_bak, CLUSTER_NUM, P, &err);
-	//err= 0; // ‰·“x‚ğ‰º‚°‚é
-	if (EPSIRON < err){
-		//	‰·“x‚ğ‰º‚°‚¸‚ÉŠÖ”‚ğI—¹
-		ds[i].t_pos++;
-		ds[i].T[ds[i].t_pos] = ds[i].T[ds[i].t_pos - 1];
-		return;
+	/* ” ‚Ì‰Šú‰» */
+	for (int i = 0; i < N; i++){
+		h_ds[i].Thigh = pow(tmp, (i + 1.0f - N / 2.0f) / (N / 2.0f));
+		h_ds[i].iterations = 0;
+		make_random(h_ds[i].vi, CLUSTER_NUM*P, 0.0, 10.0);
+		deepcopy(_xk, h_ds[i].xk, DATA_NUM*P);
+		h_ds[i].finished = FALSE;
 	}
 
-	//	‘O‚Ì‰·“x‚Æ‚Ìû‘©‚ğ”»’è
-	//	û‘©‚µ‚Ä‚¢‚½‚çI—¹
-	__device_calc_convergence(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM, P, &err);
-	//err = 0; // I—¹
-	if (err < EPSIRON){
-		//	‚±‚Ì“_‚ÅƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚ğI—¹‚·‚é
-		ds[i].is_finished = TRUE;
-		return;
+	/* ƒvƒŒƒNƒ‰ƒXƒ^ƒŠƒ“ƒO */
+	for (int i = 0; i < 10; i++){
+		d_ds = h_ds;
+		device_pre_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
+		cudaDeviceSynchronize();
+		h_ds = d_ds;
 	}
 
-	//	ƒoƒbƒNƒAƒbƒv
-	//	‰·“x‚ğ‰º‚°‚é‘O‚Ìvi‚ğ•Û‘¶
-	__device_copy_float(ds[i].vi, ds[i].Vi_bak, CLUSTER_NUM*P);
+	/* vi‚ğ•\¦‚µ‚Ä‚İ‚é */
+	FILE *fp = fopen("tmp.txt", "w");
+	FILE *fp2 = fopen("it.txt", "w");
+	for (int i = 0; i < N; i++){
+		//sort(h_ds[i].vi, CLUSTER_NUM*P);
+		//sort3(h_ds[i].vi);
+		print_vi(fp, h_ds[i].vi);
+		//print_results(h_ds[i].uik);
+		fprintf(fp2, "%d\n", h_ds[i].iterations);
+	}
+	fclose(fp);
+	fclose(fp2);
+	exit(1);
 
-	// û‘©‚µ‚Ä‚¢‚È‚¯‚ê‚Î‰·“x‚ğ‰º‚°‚ÄŒJ‚è•Ô‚·
-	//	cd‚ğ‚¤‚Ü‚¢‚±‚Æ‚¿‚å‚¤‚¹‚¢‚·‚é
-	//float cd = (4.0-1.01)*i/N + 1.01;
-	ds[i].t_pos++; 
-	ds[i].t_change_num++;
-	__device_VFA(&t, ds[i].T[0], ds[i].t_change_num + 1, P, CD);
-	ds[i].T[ds[i].t_pos] = t;
 
+
+
+	/* GPU‚Å1‰ñƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚µ‚Ä‚©‚çThigh‚ğŒvZ‚·‚é */
+	/*
+	float sum = 0.0;
+	for (int i = 0; i < 100; i++){
+	make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
+	update_dik(_dik, _vi, _xk, CLUSTER_NUM, DATA_NUM, P);
+	update_uik(_uik, _dik, CLUSTER_NUM, DATA_NUM,  Q);
+	update_vi(_uik, _xk, _vi, CLUSTER_NUM, DATA_NUM, P, Q);
+	float L1k_bar = calc_L1k(_xk, _vi, CLUSTER_NUM, DATA_NUM, P);
+	sum += CLUSTER_NUM / L1k_bar;
+
+	for (int j = 0; j < CLUSTER_NUM; j++){
+	for (int p = 0; p < P;  p++){
+	printf("%.3f ", _vi[j*P + p]);
+	}
+	}
+	printf("\n");
+	}
+	*/
+
+	/* Thigh‚ğŒvZ‚·‚é */
+	float sum = 0.0;
+	for (int i = 0; i < N; i++){
+		float L1k_bar = calc_L1k(_xk, h_ds[i].vi, CLUSTER_NUM, DATA_NUM, P);
+		sum += CLUSTER_NUM / L1k_bar;
+		sort(h_ds[i].vi, CLUSTER_NUM*P);
+		for (int j = 0; j < CLUSTER_NUM; j++){
+			for (int p = 0; p < P; p++){
+				printf("%.3f ", h_ds[i].vi[j*P + p]);
+			}
+		}
+		printf("\n");
+	}
+	printf("\n\nThigh=%.3f\n", N/sum);
+
+	/* ’†SŒˆ’è */
+	make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
+	
+	/* Thigh‚ğŒvZ‚·‚é */
+	float Thigh = N / sum;
+	float T = Thigh;
+	float q = 2.0;
+
+	/* ƒƒCƒ“ƒNƒ‰ƒXƒ^ƒŠƒ“ƒOƒXƒeƒbƒv */
+	for (int it = 0; it < 50; it++){
+		printf("T=%f Processing... %d/50\n", T, it);
+
+		/* ‹A‘®“xuikŒvZ‚ğ•À—ñ‰»‚µ‚ÄXV‚·‚é */
+		update_dik(_dik, _vi, _xk, CLUSTER_NUM, DATA_NUM, P);
+		update_uik_with_T(_uik, _dik, CLUSTER_NUM, DATA_NUM, q, T);
+
+		//	vi‚ÌƒoƒbƒNƒAƒbƒv‚ğæ‚é
+		deepcopy(_vi, _vi_bak, CLUSTER_NUM*P);
+
+		//	vi(centroids)‚ğXV‚·‚é
+		update_vi(_uik, _xk, _vi, CLUSTER_NUM, DATA_NUM, P, q);
+
+		//	“¯ˆê‰·“x‚Å‚Ìû‘©‚ğ”»’è
+		//	û‘©‚µ‚Ä‚¢‚È‚¯‚ê‚Î‚»‚Ì‚Ü‚Ü‚Ì‰·“x‚ÅŒJ‚è•Ô‚·
+		float err = 0.0;
+		calc_convergence(_vi, _vi_bak, CLUSTER_NUM, P, &err);
+		if (EPSIRON < err){
+			//	‰·“x‚ğ‰º‚°‚¸‚ÉƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚ğŒp‘±
+			continue;
+		}
+
+		//	‘O‚Ì‰·“x‚Æ‚Ìû‘©‚ğ”»’è
+		//	û‘©‚µ‚Ä‚¢‚½‚çI—¹
+		calc_convergence(_vi, _Vi_bak, CLUSTER_NUM, P, &err);
+		//err = 0; // I—¹
+		if (err < EPSIRON){
+			//	‚±‚Ì“_‚ÅƒNƒ‰ƒXƒ^ƒŠƒ“ƒO‚ğI—¹‚·‚é
+			break;
+		}
+
+		//	‰·“x‚ğ‰º‚°‚é‘O‚Ìvi‚ğ•Û‘¶
+		deepcopy(_vi, _Vi_bak, CLUSTER_NUM*P);
+
+		// û‘©‚µ‚Ä‚¢‚È‚¯‚ê‚Î‰·“x‚ğ‰º‚°‚ÄŒJ‚è•Ô‚·
+		VFA(&T, Thigh, it, P);
+	}
 	
 
+	//print_results(_uik);
+	return 0;
 }
-
-
-
-/*
-ŠÖ”node_expand()
-‘JˆÚæ‚Ì‰·“x‚ğŒˆ’è‚µAq‹Ÿ‚ğ¶¬‚·‚éB
-‚±‚±‚Å‚ÍFCM–@‚ÌÀs‚Í‚¹‚¸Ae‚©‚ç’l‚ğˆø‚«Œp‚®‚Ì‚İB
-node_execute()‚ÅFCM–@‚ğ1‰ñ‚¾‚¯Às‚·‚éB
-TODO: ¶¬‚·‚éq‹Ÿ‚Ì”, Ÿ‰ñ‰·“x‚ÌŒˆ’èB
-*/
-/*
-void node_expand(const node_t *node, std::vector<node_t> *children){
-if (node->temp_scenario.size() > 2) return;
-
-for (int i = 0; i < 3; i++){
-node_t child;
-std::copy(node->temp_scenario.begin(), node->temp_scenario.end(), std::back_inserter(child.temp_scenario));
-child.temp_scenario.push_back(node->temp_scenario.back() / 2.0f);
-children->push_back(child);
-}
-
-}
-*/
-
-
-
-/*
-ƒm[ƒh‚ğGPU‚Å“WŠJ‚·‚é
-*/
-__global__ void gpu_node_execute(int *results){
-	int idx = threadIdx.x;
-	results[idx] = threadIdx.x;
-}
-
-
-/*
-•—Dæ’Tõ(Breadth First Search)
-*/
-/*
-int BFS(node_t node){
-int n = 0; // ‚±‚ê‚Ü‚Å‚É’Tõ‚µ‚½ƒm[ƒh”
-std::list<node_t> open_list;	//	ƒI[ƒvƒ“ƒŠƒXƒg
-
-open_list.push_back(node);
-while (!open_list.empty()){
-node = open_list.front();
-for (int i = 0; i<node.temp_scenario.size(); i++){
-printf("%f ", node.temp_scenario[i]);
-}
-printf("\n");
-
-if (node_is_goal(&node)){
-return n;
-}
-
-n++;
-open_list.pop_front();
-
-//	CPU‚Åqƒm[ƒh‚ğ“WŠJ‚·‚é
-std::vector<node_t> children;
-node_expand(&node, &children);
-
-//	CPU¨GPUƒf[ƒ^ƒRƒs[
-//	node_tŒ^‚Ì‚Ü‚Ü‚Å‚Í—˜—p‚Å‚«‚È‚¢‚Ì‚Å•ÏŠ·‚µ‚Ä‚¨‚­
-thrust::device_vector<int> d_results(8);
-
-for (auto it = children.begin(); it != children.end(); it++){
-
-}
-
-//	•À—ñ‚ÅFCMÀs‚·‚é
-gpu_node_execute << <1, 8 >> >(thrust::raw_pointer_cast(d_results.data()));
-
-//	CPU¨GPUƒf[ƒ^ƒRƒs[
-// node_tŒ^‚É•ÏŠ·‚µ‚Ä‚¨‚­
-//auto it_results = d_results.begin
-for (auto it = children.begin(); it != children.end(); it++){
-(*it).result.push_back(0);
-}
-
-//	open_list‚É’Ç‰Á‚µ‚ÄÄ“x’Tõ
-int n = children.size();
-for (int i = 0; i < n; i++){
-open_list.push_back(children[i]);
-}
-
-}
-return -1;
-}
-*/
-
