@@ -100,7 +100,6 @@ void sort(float *src, int size){
 WARNING
 6章 ハイブリッドアニーリングで実装します
 
-面倒なんで全部グローバル変数で
 ##########################################################################
 */
 
@@ -115,6 +114,31 @@ public:
 	int iterations;
 	BOOL finished;
 }DataFormat;
+
+template <typename T>
+class EvalFormat{
+private:
+	T sum;
+	int cnt;
+public:
+	T min;
+	T max;
+	EvalFormat(){
+		this->min = INT32_MAX;
+		this->max = 0;
+		this->sum = 0;
+		this->cnt = 0;
+	}
+	void add(T value){
+		this->sum += value;
+		this->cnt++;
+	}
+
+	float average(){
+		return (float)(this->sum / this->cnt);
+	}
+
+};
 
 void VFA(float *T, float Thigh, int k, float D, float Cd = 2.0){
 	*T = Thigh * exp(-Cd*pow((float)k - 1, 1.0f / D));
@@ -279,7 +303,6 @@ void sort3(float *src){
 }
 
 
-
 __device__ void __device_update_dik(float *dik, float *vi, float *xk, int iSize, int kSize, int pSize){
 	for (int i = 0; i < iSize; i++){
 		for (int k = 0; k < kSize; k++){
@@ -384,9 +407,22 @@ __global__ void device_pre_FCM(DataFormat*dss){
 		ds->finished = TRUE;
 }
 
+
+
+
+//	=====================================================================
+//	メイン関数
+//
+//	====================================================================
 int main(){
+	/* 乱数調整 */
 	srand((unsigned)time(NULL));
 	for (int i = 0; i < 100; i++) rand();
+
+	/* 評価用変数 */
+	EvalFormat<int> eval_err;
+	EvalFormat<int> eval_it;
+	EvalFormat<float> eval_time;  // 時間だけはfloatで作成
 
 	/* 箱を用意する */
 	float _Vi_bak[CLUSTER_NUM*P];
@@ -399,140 +435,99 @@ int main(){
 	thrust::host_vector<DataFormat> h_ds(N);
 
 	/* データロード */
-	if (load_dataset(DS_FILENAME, _xk, P,  DATA_NUM) != 0){
+	if (load_dataset(DS_FILENAME, _xk, P, DATA_NUM) != 0){
 		fprintf(stderr, "LOAD FAILED.");
 		exit(1);
 	}
 
-	/* Thighの基準値決定 */
-	/* 先生の方法によりThighを求める */
-	float tmp = 0.0;
-	for (int i = 0; i < 1000; i++){
+	/* ハイブリッド法を繰り返し行い，誤分類数(err)，帰属度更新回数(it)，実行時間(time)の最小，最大，平均値を求める */
+	for (int g_it = 0; g_it < 10; g_it++){
+		printf("Prosessing %d/10", g_it);
+
+		/* T_baseを決定 */
+		float Tbase = 0.0;
+		for (int i = 0; i < 1000; i++){
+			make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
+			float L1k_bar = calc_L1k(_xk, _vi, CLUSTER_NUM, DATA_NUM, P);
+			Tbase += CLUSTER_NUM / L1k_bar;
+		}
+		Tbase = 1000 / Tbase;
+		printf("Tbase=%f\n", Tbase);
+
+		/* 箱の初期化 */
+		/* TODO: Tjの決定方法 */
+		for (int i = 0; i < N; i++){
+			h_ds[i].Thigh = pow(Tbase, (i + 1.0f - N / 2.0f) / (N / 2.0f));
+			h_ds[i].iterations = 0;
+			make_random(h_ds[i].vi, CLUSTER_NUM*P, 0.0, 10.0);
+			deepcopy(_xk, h_ds[i].xk, DATA_NUM*P);
+			h_ds[i].finished = FALSE;
+		}
+
+		/* 各スレッドでフェーズ1を実行 */
+		for (int i = 0; i < 10; i++){
+			d_ds = h_ds;
+			device_pre_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
+			cudaDeviceSynchronize();
+			h_ds = d_ds;
+		}
+
+		/* 平均値を利用して中心を決定 */
 		make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
-		float L1k_bar = calc_L1k(_xk, _vi, CLUSTER_NUM, DATA_NUM, P);
-		tmp += CLUSTER_NUM / L1k_bar;
-	}
-	tmp = 1000 / tmp;
-	printf("Thigh=%f\n", tmp);
 
+		/* フェーズ2を実行 */
+		float T = Tbase;
+		float q = Q;
+		int it = 0;
+		for (; it < 50; it++){
+			printf("T=%f Processing... %d/50\n", T, it);
 
-	/* 箱の初期化 */
-	for (int i = 0; i < N; i++){
-		h_ds[i].Thigh = pow(tmp, (i + 1.0f - N / 2.0f) / (N / 2.0f));
-		h_ds[i].iterations = 0;
-		make_random(h_ds[i].vi, CLUSTER_NUM*P, 0.0, 10.0);
-		deepcopy(_xk, h_ds[i].xk, DATA_NUM*P);
-		h_ds[i].finished = FALSE;
-	}
+			/* 帰属度uik計算を並列化して更新する */
+			update_dik(_dik, _vi, _xk, CLUSTER_NUM, DATA_NUM, P);
+			update_uik_with_T(_uik, _dik, CLUSTER_NUM, DATA_NUM, q, T);
 
-	/* プレクラスタリング */
-	for (int i = 0; i < 10; i++){
-		d_ds = h_ds;
-		device_pre_FCM << <1, N >> >(thrust::raw_pointer_cast(d_ds.data()));
-		cudaDeviceSynchronize();
-		h_ds = d_ds;
-	}
+			//	viのバックアップを取る
+			deepcopy(_vi, _vi_bak, CLUSTER_NUM*P);
 
-	/* viを表示してみる */
-	FILE *fp = fopen("tmp.txt", "w");
-	FILE *fp2 = fopen("it.txt", "w");
-	for (int i = 0; i < N; i++){
-		//sort(h_ds[i].vi, CLUSTER_NUM*P);
-		//sort3(h_ds[i].vi);
-		print_vi(fp, h_ds[i].vi);
-		//print_results(h_ds[i].uik);
-		fprintf(fp2, "%d\n", h_ds[i].iterations);
-	}
-	fclose(fp);
-	fclose(fp2);
-	exit(1);
+			//	vi(centroids)を更新する
+			update_vi(_uik, _xk, _vi, CLUSTER_NUM, DATA_NUM, P, q);
 
-
-
-
-	/* GPUで1回クラスタリングしてからThighを計算する */
-	/*
-	float sum = 0.0;
-	for (int i = 0; i < 100; i++){
-	make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
-	update_dik(_dik, _vi, _xk, CLUSTER_NUM, DATA_NUM, P);
-	update_uik(_uik, _dik, CLUSTER_NUM, DATA_NUM,  Q);
-	update_vi(_uik, _xk, _vi, CLUSTER_NUM, DATA_NUM, P, Q);
-	float L1k_bar = calc_L1k(_xk, _vi, CLUSTER_NUM, DATA_NUM, P);
-	sum += CLUSTER_NUM / L1k_bar;
-
-	for (int j = 0; j < CLUSTER_NUM; j++){
-	for (int p = 0; p < P;  p++){
-	printf("%.3f ", _vi[j*P + p]);
-	}
-	}
-	printf("\n");
-	}
-	*/
-
-	/* Thighを計算する */
-	float sum = 0.0;
-	for (int i = 0; i < N; i++){
-		float L1k_bar = calc_L1k(_xk, h_ds[i].vi, CLUSTER_NUM, DATA_NUM, P);
-		sum += CLUSTER_NUM / L1k_bar;
-		sort(h_ds[i].vi, CLUSTER_NUM*P);
-		for (int j = 0; j < CLUSTER_NUM; j++){
-			for (int p = 0; p < P; p++){
-				printf("%.3f ", h_ds[i].vi[j*P + p]);
+			//	同一温度での収束を判定
+			//	収束していなければそのままの温度で繰り返す
+			float err = 0.0;
+			calc_convergence(_vi, _vi_bak, CLUSTER_NUM, P, &err);
+			if (EPSIRON < err){
+				//	温度を下げずにクラスタリングを継続
+				continue;
 			}
+
+			//	前の温度との収束を判定
+			//	収束していたら終了
+			calc_convergence(_vi, _Vi_bak, CLUSTER_NUM, P, &err);
+			//err = 0; // 終了
+			if (err < EPSIRON){
+				//	この時点でクラスタリングを終了する
+				break;
+			}
+
+			//	温度を下げる前のviを保存
+			deepcopy(_vi, _Vi_bak, CLUSTER_NUM*P);
+
+			// 収束していなければ温度を下げて繰り返す
+			VFA(&T, Tbase, it, P);
 		}
-		printf("\n");
+
+		//	繰り返し回数を記録
+		eval_it.min = MIN(it, eval_it.min);
+		eval_it.max  = MAX(it, eval_it.max);
+		eval_it.add(it);
+
 	}
-	printf("\n\nThigh=%.3f\n", N/sum);
 
-	/* 中心決定 */
-	make_random(_vi, CLUSTER_NUM*P, 0.0, 10.0);
-	
-	/* Thighを計算する */
-	float Thigh = N / sum;
-	float T = Thigh;
-	float q = 2.0;
 
-	/* メインクラスタリングステップ */
-	for (int it = 0; it < 50; it++){
-		printf("T=%f Processing... %d/50\n", T, it);
+	/* 結果の表示 */
+	printf("更新回数: {min: %d, max: %d, ave: %f}", eval_it.min, eval_it.max, eval_it.average());
 
-		/* 帰属度uik計算を並列化して更新する */
-		update_dik(_dik, _vi, _xk, CLUSTER_NUM, DATA_NUM, P);
-		update_uik_with_T(_uik, _dik, CLUSTER_NUM, DATA_NUM, q, T);
 
-		//	viのバックアップを取る
-		deepcopy(_vi, _vi_bak, CLUSTER_NUM*P);
-
-		//	vi(centroids)を更新する
-		update_vi(_uik, _xk, _vi, CLUSTER_NUM, DATA_NUM, P, q);
-
-		//	同一温度での収束を判定
-		//	収束していなければそのままの温度で繰り返す
-		float err = 0.0;
-		calc_convergence(_vi, _vi_bak, CLUSTER_NUM, P, &err);
-		if (EPSIRON < err){
-			//	温度を下げずにクラスタリングを継続
-			continue;
-		}
-
-		//	前の温度との収束を判定
-		//	収束していたら終了
-		calc_convergence(_vi, _Vi_bak, CLUSTER_NUM, P, &err);
-		//err = 0; // 終了
-		if (err < EPSIRON){
-			//	この時点でクラスタリングを終了する
-			break;
-		}
-
-		//	温度を下げる前のviを保存
-		deepcopy(_vi, _Vi_bak, CLUSTER_NUM*P);
-
-		// 収束していなければ温度を下げて繰り返す
-		VFA(&T, Thigh, it, P);
-	}
-	
-
-	//print_results(_uik);
 	return 0;
 }
