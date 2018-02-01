@@ -102,22 +102,8 @@
     <CudaCompile Include="bandwidthTest.cu" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CpuGpuData.cuh" />
-    <ClInclude Include="fcm.h" />
-    <ClInclude Include="Logger.h" />
-    <ClInclude Include="PFCM.h" />
-    <ClInclude Include="picjson.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="fcm.cpp" />
-    <ClCompile Include="Logger.cpp" />
-    <ClCompile Include="PFCM.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="config.json" />
     <None Include="doc\readme.md" />
     <None Include="install_lib.md" />
-    <None Include="README.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
